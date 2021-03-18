@@ -1,5 +1,6 @@
 from novelties import status_codes
-from novelties import vehicle_types, agent_codes
+from novelties import vehicle_types
+from config.hex_setting import FULL_CHARGE_PRICE
 import numpy as np
 
 class VehicleState(object):
@@ -7,22 +8,26 @@ class VehicleState(object):
     __slots__ = [
         'id', 'lat', 'lon', 'speed', 'status', 'destination_lat', 'destination_lon', 'type', 
         'travel_dist', 'price_per_travel_m', 'price_per_wait_min', 'gas_price','full_charge_price',
-        'assigned_customer_id', 'assigned_charging_station', 'time_to_destination', 'idle_duration',
+        'assigned_customer_id', 'assigned_charging_station_id', 'time_to_destination', 'idle_duration',
         'queueing_duration', 'current_capacity', 'max_capacity', 'driver_base_per_trip', 'mileage', 
-        'mile_of_range','target_SOC','SOC','agent_type','charging_threshold','hex_id','current_hex','vehicle_id']
+        'mile_of_range','target_SOC','SOC','agent_type','charging_threshold','hex_id','current_hex',
+        'vehicle_id','dispatch_action_id']
 
     def __init__(self, id, location, hex_id, agent_type):
+        '''
+        todo: delete gas-related metrics
+        '''
         self.id = id
         self.vehicle_id = id
-        self.lat, self.lon = location
+        self.lon,self.lat = location
         self.hex_id = hex_id
-        self.current_hex=hex_id #when initialized, the current location is the same as hex_id
+        self.current_hex = hex_id #when initialized, the current location is the same as hex_id
         self.agent_type = agent_type
         self.speed = 0
         self.status = status_codes.V_IDLE
-        self.destination_lat, self.destination_lon = None, None
+        self.destination_lon, self.destination_lat = None, None
         self.assigned_customer_id =  None
-        self.assigned_charging_station = None
+        self.assigned_charging_station_id = None
         self.time_to_destination = 0
         self.idle_duration = 0
         # self.total_idle = 0
@@ -35,13 +40,14 @@ class VehicleState(object):
         self.gas_price = 235        # In cents
         self.type = self.selectVehicleType()
         self.max_capacity = self.setCapacity()
-        self.mileage = self.set_mileage()
+        # self.mileage = self.set_mileage()
         self.mile_of_range = self.set_range()
-        self.target_SOC = float(min(1,max(0,np.random.normal(0.90,0.02))))*self.set_range()
+        self.target_SOC = float(min(1,max(0,np.random.normal(0.90,0.02))))
         self.set_price_rates()
-        self.full_charge_price = 13 # 0.26  $/kwh * 50 kwh
-        self.SOC = float(min(1,max(0,np.random.normal(0.2,0.05))))*self.set_range() # SOC~N(50%,2%)
+        self.full_charge_price = FULL_CHARGE_PRICE # 0.26  $/kwh * 50 kwh
+        self.SOC = float(min(1,max(0,np.random.normal(0.9,0.02)))) # SOC~N(50%,2%)
         self.charging_threshold = 0.2
+        self.dispatch_action_id = 0
         
     def selectVehicleType(self):
         r = 1 # randrange(4)
@@ -65,19 +71,19 @@ class VehicleState(object):
         if self.type == vehicle_types.SUV:
             return 5
 
-    def set_mileage(self): # mile/gallon
-        if self.type == vehicle_types.sedan:
-            self.mileage = float(30)
-            return self.mileage
-        if self.type == vehicle_types.hatch_back:
-            self.mileage = float(35)
-            return self.mileage
-        if self.type == vehicle_types.luxury:
-            self.mileage = float(25)
-            return self.mileage
-        if self.type == vehicle_types.SUV:
-            self.mileage = float(15)
-            return self.mileage
+    # def set_mileage(self): # mile/gallon
+    #     if self.type == vehicle_types.sedan:
+    #         self.mileage = float(30)
+    #         return self.mileage
+    #     if self.type == vehicle_types.hatch_back:
+    #         self.mileage = float(35)
+    #         return self.mileage
+    #     if self.type == vehicle_types.luxury:
+    #         self.mileage = float(25)
+    #         return self.mileage
+    #     if self.type == vehicle_types.SUV:
+    #         self.mileage = float(15)
+    #         return self.mileage
 
     def set_range(self): # miles
         if self.type == vehicle_types.sedan: #model 3
@@ -98,25 +104,14 @@ class VehicleState(object):
             self.price_per_travel_m = float(375) / 1000.0  # Per meter
             self.price_per_wait_min = float(0.05 / 3600)  # Per hour
             self.driver_base_per_trip = float(1000)
-        if self.type == vehicle_types.hatch_back:
-            self.price_per_travel_m = float(350) / 1000.0
-            self.price_per_wait_min = float(0.05 / 3600)
-            self.driver_base_per_trip = float(500)
-        if self.type == vehicle_types.luxury:
-            self.price_per_travel_m = float(425) / 1000.0
-            self.price_per_wait_min = float(0.05 / 3600)
-            self.driver_base_per_trip = float(1600)
-        if self.type == vehicle_types.SUV:
-            self.price_per_travel_m = float(400) / 1000.0
-            self.price_per_wait_min = float(0.05 / 3600)
-            self.driver_base_per_trip = float(1500)
+
 
     # When trip is over or cancelled
     def reset_plan(self):
-        self.destination_lat, self.destination_lon = None, None
+        self.destination_lon, self.destination_lat = None, None
         self.speed = 0
         self.assigned_customer_id = None
-        self.assigned_charging_station = None
+        self.assigned_charging_station_id = None
         self.time_to_destination = 0
 
     def to_msg(self):

@@ -2,9 +2,12 @@
 
 import numpy as np
 
+'''
+todo: change other functions to lon lat
+'''
 R = 6371000  # earth's radius in meters.
 
-def great_circle_distance(start_lat, start_lon, end_lat, end_lon):
+def great_circle_distance(start_lon, start_lat, end_lon, end_lat):
     """Distance in meters
 
     """

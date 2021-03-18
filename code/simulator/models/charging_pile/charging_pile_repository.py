@@ -3,6 +3,9 @@ from config.hex_setting import charging_station_data_path
 
 
 class ChargingRepository():
+    '''
+    make it infinity:
+    '''
     # charging_stations ={}
     charging_repo = []
     @classmethod

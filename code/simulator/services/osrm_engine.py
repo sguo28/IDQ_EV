@@ -2,8 +2,8 @@
 
 import polyline
 from .async_requester import AsyncRequester
-from config.hex_setting import OSRM_HOSTPORT
-import geopandas as gpd
+from config.hex_setting import OSRM_HOSTPORT, SPEED
+
 class OSRMEngine(object):
     """Sends and parses asynchronous requests from list of O-D pairs"""
     def __init__(self, n_threads=8):
@@ -45,24 +45,42 @@ class OSRMEngine(object):
             resultlist.append((trajectory, triptime))
 
         return resultlist
-    '''
-    # Getting trajectory, time from cache if exists, and storing it to the cache if it does not exsist
-    def get_route_cache(self, l, a):
-        if l in self.route_cache:
-            if a in self.route_cache[l]:
-                trajectory, triptime = self.route_cache[l][a]
-                return trajectory[:], triptime
-        else:
-            self.route_cache[l] = {}
-        x, y = l
-        ax, ay = a
-        origin = convert_xy_to_lonlat(x, y)
-        destin = convert_xy_to_lonlat(x + ax, y + ay)
-        self.route_cache[l][a] = self.route([(origin, destin)])[0]      # Storing the route to the cache
-        trajectory, triptime = self.route_cache[l][a]
-        return trajectory[:], triptime
 
-    '''    
+    def route_hex(self, origin_coord, dest_coord, decode=True):
+        """Input list of Origin-Destination latlong pairs, return
+        tuple of (trajectory latlongs, distance, triptime)"""
+        urllist = [self.get_route_url(origin_coord, dest_coord)]
+        responses = self.async_requester.send_async_requests(urllist)
+        # resultlist = []
+        for res in responses:
+            if "routes" not in res:
+                continue
+            route = res["routes"][0]    # Getting the next route available
+            triptime = route["duration"]
+            if decode:
+                trajectory = polyline.decode(route['geometry'])
+            else:
+                trajectory = route['geometry']
+            # resultlist.append((trajectory, triptime))
+
+        return trajectory, triptime
+
+    # Getting trajectory, time from cache if exists, and storing it to the cache if it does not exsist
+    # def get_route_cache(self, l, a):
+    #     if l in self.route_cache:
+    #         if a in self.route_cache[l]:
+    #             trajectory, triptime = self.route_cache[l][a]
+    #             return trajectory[:], triptime
+    #     else:
+    #         self.route_cache[l] = {}
+    #     x, y = l
+    #     ax, ay = a
+    #     origin = convert_xy_to_lonlat(x, y)
+    #     destin = convert_xy_to_lonlat(x + ax, y + ay)
+    #     self.route_cache[l][a] = self.route([(origin, destin)])[0]      # Storing the route to the cache
+    #     trajectory, triptime = self.route_cache[l][a]
+    #     return trajectory[:], triptime
+
     def get_route_cache_by_lonlat(self,o_lonlat,d_lonlat):
         if o_lonlat in self.route_cache:
             if d_lonlat in self.route_cache[o_lonlat]:
@@ -101,17 +119,17 @@ class OSRMEngine(object):
         except:
             print(origins, destins, res)
             raise
-        return eta_matrix
+        return eta_matrix*SPEED
 
 
-    def get_route_url(cls, from_latlon, to_latlon):
+    def get_route_url(cls, from_lonlat, to_lonlat):
         """Get URL for osrm backend call for arbitrary to/from latlong pairs"""
         urlholder = """http://{hostport}/route/v1/driving/{lon0},{lat0};{lon1},{lat1}?overview=full""".format(
             hostport=OSRM_HOSTPORT,
-            lon0=from_latlon[1],
-            lat0=from_latlon[0],
-            lon1=to_latlon[1],
-            lat1=to_latlon[0]
+            lon0=from_lonlat[0],
+            lat0=from_lonlat[1],
+            lon1=to_lonlat[1],
+            lat1=to_lonlat[1]
             )
         return urlholder
 
@@ -140,13 +158,13 @@ class OSRMEngine(object):
         return urlholder
 
 
-    def get_eta_many_to_many_url(cls, from_latlon_list, to_latlon_list):
-        latlon_list = from_latlon_list + to_latlon_list
-        ids = range(len(latlon_list))
+    def get_eta_many_to_many_url(cls, from_lonlat_list, to_lonlat_list):
+        lonlat_list = from_lonlat_list + to_lonlat_list
+        ids = range(len(lonlat_list))
         urlholder = """http://{hostport}/table/v1/driving/polyline({coords})?sources={sources}&destinations={destins}""".format(
             hostport=OSRM_HOSTPORT,
-            coords=polyline.encode(latlon_list, 5),
-            sources=';'.join(map(str, ids[:len(from_latlon_list)])),
-            destins=';'.join(map(str, ids[len(from_latlon_list):]))
+            coords=polyline.encode(lonlat_list, 5),
+            sources=';'.join(map(str, ids[:len(from_lonlat_list)])),
+            destins=';'.join(map(str, ids[len(from_lonlat_list):]))
         )
         return urlholder

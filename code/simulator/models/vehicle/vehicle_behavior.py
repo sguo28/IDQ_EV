@@ -1,6 +1,4 @@
-import simulator.models.customer.customer_repository
 from common import geoutils
-from simulator.settings import FLAGS
 
 class VehicleBehavior(object):
     available = True
@@ -10,21 +8,16 @@ class VehicleBehavior(object):
 
 
 class Waytocharge(VehicleBehavior):
+    '''
+    todo: vehicle.state.status == V_WAITPILE; charging_station_repo[vehicle.get_assigned_cs()].add_arrival_veh(vehicle)
+    '''
     available = False
     # Updated remaining time to destination
     def step(self, vehicle, timestep,tick):
         arrived = vehicle.update_time_to_destination(timestep)
         if arrived: # arrive at charing station
-            charging_station = vehicle.get_assigned_cs()
-            try:
-                # print(vehicle.get_id(),"####WAIT TO CHARGE####")
-                charging_station.add_arrival_veh(vehicle)
-                vehicle.start_waitpile()
-            except:
-                AttributeError
-            # vehicle.start_charge(charging_pile)
-            # consider non_linear charging speed and add residual time as "time to destination(CS)"
-
+            vehicle.start_waitpile()
+            
 class Charging(VehicleBehavior):
     available = False
     # Updated remaining time to destination, if arrived customer gets off
@@ -45,6 +38,9 @@ class Idle(VehicleBehavior):
 
     pass
 
+class Tobedispatched(VehicleBehavior):
+
+    pass
 
 class Cruising(VehicleBehavior):
     # Updated remaining time to destination, if arrived states changes to parking
@@ -88,9 +84,7 @@ class Assigned(VehicleBehavior):
     def step(self, vehicle, timestep,tick):
         arrived = vehicle.update_time_to_destination(timestep)
         if arrived:
-            customer = simulator.models.customer.customer_repository.CustomerRepository.get(
-            vehicle.get_assigned_customer_id())
-            vehicle.pickup(customer)
+            vehicle.pickup()
 
 class OffDuty(VehicleBehavior):
     available = False

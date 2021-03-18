@@ -1,8 +1,7 @@
-import sys
-import os
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+
 # this is grid based process
 df = pd.read_csv('data/EV_facility/alt_fuel_stations.csv')
 df = df[['Fuel Type Code','State','EV Level2 EVSE Num', 'EV DC Fast Count','Latitude','Longitude']].replace(np.nan, 0)
@@ -31,10 +30,39 @@ from scipy.spatial import KDTree
 df=gpd.read_file('data/NYC_shapefiles/tagged_clustered_hex.shp')
 hxt= KDTree(df[['lon','lat']])
 pcs = pd.read_csv('data/processed_cs.csv')
+
 coord = pcs[['Longitude','Latitude']].to_numpy()
+
 _, hex_id = hxt.query(coord)
 
 pcs['hex_id']=hex_id
-pcs = pcs[['EV_Level2', 'EV_DC_Fast', 'Latitude', 'Longitude','hex_id']]
-pcs.to_csv('data/process_cs_new.csv',index=False)
 
+pcs_true = pcs[['EV_Level2', 'EV_DC_Fast', 'Latitude', 'Longitude','hex_id']]
+
+pcs_true.to_csv('data/cs_true_lonlat.csv',index=False)
+pcs[['lon','lat']] = df.loc[hex_id,['lon','lat']]
+pcs_snap = pcs[['EV_Level2', 'EV_DC_Fast', 'lat', 'lon','hex_id']]
+
+pcs_snap.to_csv('data/cs_snap_lonlat.csv',index=False)
+
+
+pcs_l2 = pcs.loc[pcs['EV_Level2']!=0]
+pcs_l2=pcs_l2[['EV_Level2','Latitude' , 'Longitude'  ,'hex_id']]
+
+pcs_l2.insert(pcs_l2.shape[1] ,'type',0)
+pcs_dc = pcs.loc[pcs['EV_DC_Fast']!=0]
+pcs_dc=pcs_dc[['EV_DC_Fast','Latitude' , 'Longitude'  ,'hex_id']]
+
+pcs_dc.insert(pcs_dc.shape[1] ,'type',1)
+pcs_l2.columns = pcs_dc.columns = ['num','lat' , 'lon'  ,'hex_id','type']
+new_df = pd.concat([pcs_l2,pcs_dc],axis=0)
+new_df.reset_index()
+
+new_df.to_csv('data/process_cs_concat.csv',index=False)
+
+
+df=gpd.read_file('data/NYC_shapefiles/processed_cs.shp')
+df.head()
+df = pd.read_csv('data/cs_snap_lonlat.csv')
+df_1 = gpd.GeoDataFrame(df,geometry= gpd.points_from_xy(df['lon'],df['lat']))
+df_1.to_file('data/NYC_shapefiles/cs_snap_lonlat.shp')

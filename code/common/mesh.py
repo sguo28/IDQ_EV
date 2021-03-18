@@ -1,4 +1,4 @@
-from config.hex_setting import LON_WIDTH, LAT_WIDTH, MIN_LAT, MIN_LON, MAP_WIDTH, MAP_HEIGHT, DELTA_LON, DELTA_LAT
+from config.hex_setting import MIN_LAT, MIN_LON, MAP_WIDTH, MAP_HEIGHT, DELTA_LON, DELTA_LAT
 import numpy as np
 
 def convert_lonlat_to_xy(lon, lat):

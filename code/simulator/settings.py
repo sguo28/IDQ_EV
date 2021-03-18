@@ -21,9 +21,9 @@ FLAGS.verbose = bool(False)  #print log verbosely.")
 FLAGS.enable_pooling = bool(False)  #Enable RideSharing/CarPooling") #1
 FLAGS.enable_pricing = bool(False)  #Enable Pricing Novelty") #1
 
-FLAGS.vehicles = int(3000)  #number of vehicles")
+FLAGS.vehicles = int(1000)  #number of vehicles")
 FLAGS.dummy_vehicles = int(1) #number of vehicles using dummy agent")
-FLAGS.dqn_vehicles = int(2999)  #number of vehicles using dqn agent")
+FLAGS.dqn_vehicles = int(999)  #number of vehicles using dqn agent")
 
 FLAGS.pretrain = int(0)  #run N pretraining steps using pickled experience memory.")
 FLAGS.start_time = int(1464753600 + 3600 * 5)  #simulation start datetime (unixtime)")
@@ -35,13 +35,13 @@ FLAGS.n_diffusions = int(3)  #number of diffusion convolution")
 FLAGS.batch_size = int(128)  #number of samples in a batch for SGD")
 FLAGS.tag = str('test') # = "tag used to identify logs")
 FLAGS.log_vehicle = bool(False)  #whether to log vehicle states")
-FLAGS.use_osrm = bool(False)  #whether to use OSRM")
+FLAGS.use_osrm = bool(True)  #whether to use OSRM")
 FLAGS.average = bool(False)  #whether to use diffusion filter or average filter")
 FLAGS.trip_diffusion = bool(False)  #whether to use trip diffusion")
 FLAGS.charging_threshold = float(0.20)
 
 GAMMA = 0.98    # Discount Factor
-MAX_MOVE = 7
+MAX_MOVE = 5
 NUM_SUPPLY_DEMAND_MAPS = 5
 NUM_FEATURES = 7 + NUM_SUPPLY_DEMAND_MAPS * (1 + (FLAGS.n_diffusions + 1) * 2) + FLAGS.n_diffusions * 2 \
                + FLAGS.trip_diffusion * 4
