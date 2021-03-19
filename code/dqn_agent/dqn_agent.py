@@ -28,16 +28,12 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
-class DeepQNetwork():
-    '''
-    add condition where the target hex is not reachable (loc = (-1,-1))
-    '''
+class DeepQNetworkAgent():
     def __init__(self):
         self.learning_rate = hex_setting.learning_rate
         self.gamma = hex_setting.gamma
         self.memory = ReplayMemory(int(hex_setting.replay_buffer_size)) # deque(maxlen=hex_setting.replay_buffer_size)
         self.batch_size = hex_setting.batch_size
-        self.action_space = [i for i in range(15)] #
         # hex_setting.action_space #[i for i in range(1+6+5)] # stay still:1 , move to adjacent hexs:6, nearest 5 charging stations:5
         self.input_dim = hex_setting.input_dim
         self.relocation_dim = hex_setting.relocation_dim 
@@ -113,9 +109,6 @@ class DeepQNetwork():
         samples = random.sample(self.memory, self.batch_size)
         state, action, next_state, reward, flags = zip(*samples)
         return state, action, next_state, reward, flags
-
-    def get_action_space(self):
-        return self.action_space
 
     def get_main_Q(self,state):
         return self.q_network.forward(state)

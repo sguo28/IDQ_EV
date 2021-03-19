@@ -1,5 +1,3 @@
-from common import geoutils
-
 class VehicleBehavior(object):
     available = True
 

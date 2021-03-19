@@ -11,7 +11,7 @@ class VehicleState(object):
         'assigned_customer_id', 'assigned_charging_station_id', 'time_to_destination', 'idle_duration',
         'queueing_duration', 'current_capacity', 'max_capacity', 'driver_base_per_trip', 'mileage', 
         'mile_of_range','target_SOC','SOC','agent_type','charging_threshold','hex_id','current_hex',
-        'vehicle_id','dispatch_action_id']
+        'vehicle_id','dispatch_action_id','need_route','route','need_interpolate', 'per_tick_dist','per_tick_coords']
 
     def __init__(self, id, location, hex_id, agent_type):
         '''
@@ -48,6 +48,11 @@ class VehicleState(object):
         self.SOC = float(min(1,max(0,np.random.normal(0.9,0.02)))) # SOC~N(50%,2%)
         self.charging_threshold = 0.2
         self.dispatch_action_id = 0
+        self.need_route = False
+        self.route={}
+        self.need_interpolate=False ## this is the flag to say we need to interpolate the distance and coordinate of each vehicle
+        self.per_tick_dist=[]
+        self.per_tick_coords=[]
         
     def selectVehicleType(self):
         r = 1 # randrange(4)

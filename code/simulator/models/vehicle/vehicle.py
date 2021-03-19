@@ -27,7 +27,6 @@ class Vehicle(object):
         if not isinstance(vehicle_state, VehicleState):
             raise ValueError
         self.state = vehicle_state
-        # print(self.state.type, self.state.max_capacity)
         self.customer=None # the passenger matched and to be picked up
         self.__behavior = self.behavior_models[vehicle_state.status]
         self.__customers = []       # A vehicle can have a list of cusotmers
@@ -48,18 +47,35 @@ class Vehicle(object):
         self.recent_transitions = deque(maxlen=10)
         self.flag = 0
 
-    # state changing methods
-    def step(self,timestep, tick, hex):
+    # update the information of vehicles, e.g. change the current hex zone location, this is not paralleled
+    def update_info(self,timestep, hex,routes):
         self.working_time += timestep
 
-        if self.state.status == status_codes.V_IDLE:
-            self.duration[status_codes.V_IDLE] += timestep
+        if self.state.need_route==True:
+            self.state.route=routes[(self.state.hex_id,self.state.current_hex)]['route']
+            self.state.time_to_destination=routes[(self.state.hex_id,self.state.current_hex)]['duration']
+            self.state.travel_dist=routes[(self.state.hex_id,self.state.current_hex)]['distance']
+            self.state.need_route=False
+            self.state.need_interpolate=True #ask the remote to interpolate the coords
 
 
-        if self.__behavior.available:
-            self.state.idle_duration += timestep
-        else:
-            self.state.idle_duration = 0
+        # if self.state.current_hex!=self.state.hex_id:
+        if self.state.current_hex!=self.state.hex_id:
+            #update each vehicle if the new location (current_hex) is different from its current one (hex_id)
+            hex.remove_veh(self)
+            hex.add_veh(self)
+            self.state.hex_id=self.state.current_hex
+
+    def step(self,timestep,tick):
+        '''
+        step function for vehicle
+        :param timestep:
+        :param tick:
+        :return:
+        '''
+        if self.state.need_interpolate==True: #make interpolation of the ticks, distance and coordinates
+            self.location_interp(timestep)
+            self.state.need_interpolate=False
 
         try:
             self.__behavior.step(self,timestep=timestep, tick=tick)
@@ -67,12 +83,14 @@ class Vehicle(object):
             logger = getLogger(__name__)
             logger.error(self.state.to_msg())
             raise
-        # if self.state.current_hex!=self.state.hex_id:
-        if self.state.current_hex!=self.state.hex_id:
-            #update each vehicle if the new location (current_hex) is different from its current one (hex_id)
-            hex.remove_veh(self)
-            hex.add_veh(self)
-            self.state.hex_id=self.state.current_hex
+        if self.__behavior.available:
+            self.state.idle_duration += timestep
+        else:
+            self.state.idle_duration = 0
+
+        if self.state.status == status_codes.V_IDLE:
+            self.duration[status_codes.V_IDLE] += timestep
+
 
     def dump_states(self,tick):
         state_rep = [tick,self.state.vehicle_id,self.state.hex_id,self.state.status==status_codes.V_OFF_DUTY,self.state.SOC]
@@ -112,15 +130,46 @@ class Vehicle(object):
         self.state.dispatch_action_id = action_id
         self.__change_to_tobedispatched()
 
-
-    def cruise(self, route, triptime,hex_id= 0,a = 0, tick=0):
+    def location_interp(self,t_unit=60):
         '''
-        stay_still: if stay_still == 1: skip virtual routing, convert to park(idle) as well as record a full transition
+        Interpolate the per tick travel distance and location based on the corresponding time unit
+        Input: self.state.route: a list of coordinates
+        self.state.time_to_destination: a list segment travel time
+        self.state.travel_dist: a list of segment travel distance
+        :return:
+        '''
+        total_tt=sum(self.state.time_to_destination)
+        cum_time=np.cumsum(self.state.time_to_destination)
+        cum_dist=np.cumsum(self.state.travel_dist)
+        time_ticks=[i*t_unit for i in range(1,total_tt//60+1)] #the time steps to query from per simulation tick
+        if total_tt%t_unit>0:
+            time_ticks.append(total_tt) #add the final step
+        per_tick_dist=np.interp(time_ticks,cum_time,cum_dist)
+        per_tick_dist=[per_tick_dist[0]]+np.diff(per_tick_dist).tolist()
+
+        lons=[self.state.route[0][0][0]]+[coord[1][0] for coord in self.state.route]
+        lats=[self.state.route[0][0][1]]+[coord[1][1] for coord in self.state.route]
+
+        cum_time=cum_time.tolist()
+        per_tick_lon=np.interp(time_ticks,[0]+cum_time,lons)
+        per_tick_lat=np.interp(time_ticks,[0]+cum_time,lats)
+        per_tick_lon=per_tick_lon.tolist()
+        per_tick_lat = per_tick_lat.tolist()
+
+        per_tick_coords=[[lon,lat] for lon,lat in zip(per_tick_lon,per_tick_lat)]
+
+        self.state.per_tick_coords=per_tick_coords
+        self.state.per_tick_dist=per_tick_dist
+
+
+    def cruise(self, route, triptime,action, tick):
+        '''
+        current hex is inplaced to destination's hex id
+        use hex_id (true current hex_id) to store in state representative
         '''
         assert self.__behavior.available
-        self.state.current_hex = hex_id
-        self.rb_state = [tick,self.get_id(),self.get_hex_id(),self.get_SOC()]
-        self.rb_action = a
+        self.rb_state = [tick,self.state.vehicle_id,self.state.hex_id,self.state.SOC]
+        self.rb_action = action
         if triptime == 0:
             self.park(tick)
             return
@@ -136,20 +185,18 @@ class Vehicle(object):
         :destination: lon, lat
         '''
         assert self.__behavior.available
+        # if triptime >0:
+        #     self.compute_speed(route,triptime)
         self.state.SOC -= distance*MILE_PER_METER*SIM_ACCELERATOR /self.get_mile_of_range()
         self.state.travel_dist += distance
         self.__reset_plan()
         self.__set_destination(destination, triptime)
         self.state.assigned_customer_id = customer_id
         self.__customers_ids.append(customer_id)
-        self.change_to_assigned()
+        self.__change_to_assigned()
         self.__log()
 
-    def head_for_charging_station(self, triptime, cs_id, cs_coord, route):
-        '''
-        :destination:
-        todo: change varibale name: station to station_id
-        '''
+    def head_for_charging_station(self, route, triptime, cs_id, cs_coord):
         assert self.__behavior.available
         if triptime >0:
             self.compute_speed(route,triptime)
@@ -170,7 +217,7 @@ class Vehicle(object):
 
     def pickup(self):
         assert self.get_location() == self.customer.get_origin_lonlat()
-        self.state.current_hex = self.customer.get_origin()
+        self.state.current_hex = self.customer.get_destination()
         self.customer.ride_on()
         self.__customers.append(self.customer)
         customer_id = self.customer.get_id()
@@ -185,8 +232,6 @@ class Vehicle(object):
 
     def dropoff(self,tick):
         assert len(self.__customers) > 0
-        lenC = len(self.__customers)
-        self.state.current_hex = self.__customers[lenC-1].get_destination()
         customer = self.__customers.pop(0)
         customer.get_off()
         self.customer_payment = customer.make_payment(1, self.state.driver_base_per_trip)
@@ -199,7 +244,7 @@ class Vehicle(object):
         trip_distance = great_circle_distance(x1,y1 ,x2,y2)
         self.state.travel_dist += trip_distance
         self.state.SOC -= trip_distance*MILE_PER_METER*SIM_ACCELERATOR /self.get_mile_of_range() # meter to mile
-        self.rb_next_state = [tick,self.get_id(),self.state.current_hex,self.get_SOC()]
+        self.rb_next_state = [tick,self.get_id(),self.state.hex_id,self.get_SOC()]
         self.rb_reward = BETA_EARNING* self.customer_payment - BETA_COST*self.compute_charging_cost(trip_distance) - SOC_PENALTY*(1-self.get_SOC())
         self.flag = int(self.state.status == status_codes.V_OFF_DUTY)
 
@@ -222,11 +267,10 @@ class Vehicle(object):
         # return customer
 
     def park(self,tick):
-        self.rb_next_state = [tick,self.get_id(),self.state.current_hex,self.get_SOC()]
+        self.rb_next_state = [tick,self.get_id(),self.state.hex_id,self.get_SOC()]
         self.rb_reward = 0
         self.flag = int(self.state.status == status_codes.V_OFF_DUTY)
         self.recent_transitions.append((self.rb_state,self.rb_action,self.rb_next_state,self.rb_reward,self.flag))
-        # self.rb_state = self.rb_next_state
         self.__reset_plan()
         self.__change_to_idle()
         self.__log()
@@ -236,21 +280,19 @@ class Vehicle(object):
         self.__log()
 
     
-    def start_charge(self,coord,hex_id):
+    def start_charge(self,coord):
         self.__reset_plan()
         self.state.lon, self.state.lat = coord
-        self.state.current_hex = hex_id
         self.__change_to_charging()
         self.__log()
     
-    def end_charge(self,tick,coord,hex_id):
+    def end_charge(self,tick,coord):
         self.state.current_capacity = 0 # current passenger on vehicle
         self.__customers_ids = []
         self.__change_to_idle()
         self.__reset_plan()
         self.state.lon, self.state.lat = coord
-        self.state.current_hex = hex_id
-        self.rb_next_state = [tick,self.get_id(),self.state.current_hex,self.get_SOC()]
+        self.rb_next_state = [tick,self.get_id(),self.state.hex_id,self.get_SOC()]
         self.rb_reward = -SOC_PENALTY* (1-self.get_SOC())
         self.flag = int(self.state.status == status_codes.V_OFF_DUTY)
         self.recent_transitions.append((self.rb_state,self.rb_action,self.rb_next_state,self.rb_reward,self.flag))
@@ -398,7 +440,7 @@ class Vehicle(object):
     def __change_to_cruising(self):
         self.__change_behavior_model(status_codes.V_CRUISING)
 
-    def change_to_assigned(self):
+    def __change_to_assigned(self):
         self.__change_behavior_model(status_codes.V_ASSIGNED)
 
     def __change_to_occupied(self):

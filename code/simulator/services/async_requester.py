@@ -5,27 +5,50 @@ import requests
 import asyncio
 import osrm
 
+
 class AsyncRequester(object):
     """Send asynchronous requests to list of urls
     Response time may be limited by rate of system/NW"""
+
     def __init__(self, n_threads=8):
         # self.urllist = []
         self.n_threads = n_threads
         self.executor = futures.ThreadPoolExecutor(max_workers=self.n_threads)
-        self.client=osrm.Client(host='http://localhost:5000')
-            
-    async def async_requests(self,pts):
-        Client=osrm.AioHTTPClient(host='http://localhost:5000')
-        response=await asyncio.gather(*[
-                asyncio.ensure_future(Client.nearest(coordinates=[p]))
-                for p in pts
-            ])
+        self.client = osrm.Client(host='http://localhost:5000')
+
+    async def async_requests(self, pts):
+        Client = osrm.AioHTTPClient(host='http://localhost:5000')
+        response = await asyncio.gather(*[
+            asyncio.ensure_future(Client.nearest(coordinates=[p]))
+            for p in pts
+        ])
         await Client.close()
         return response
-    
-    def combine_async(self,pts):
+
+    def combine_async(self, pts):
         loop = asyncio.get_event_loop()
-        results=loop.run_until_complete(self.async_requests(pts))
+        results = loop.run_until_complete(self.async_requests(pts))
+        return results
+
+    async def async_route(self, od_list):
+        Client = osrm.AioHTTPClient(host='http://localhost:5000')
+        response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt)) for pt in od_list])
+        await Client.close()
+        return response
+
+    def sequential_route(self,od_list):
+        idx=0
+        response=[]
+        for pt in od_list:
+            response.append(self.client.route(coordinates=pt,steps=True))
+            idx+=1
+            print(idx)
+        return response
+
+    def combine_async_route(self, od_list):
+        loop = asyncio.get_event_loop()
+        results = loop.run_until_complete(self.async_route(od_list))
+
         return results
 
     def send_async_requests(self, pts):
@@ -35,16 +58,17 @@ class AsyncRequester(object):
         # Num of batches per thread
         n_batches = int(len(pts) / self.n_threads) + 1
         # List of URLs per batch
-        batch_urllist = [pts[i * n_batches : (i + 1) * n_batches]
-                        for i in range(self.n_threads)]
+        batch_urllist = [pts[i * n_batches: (i + 1) * n_batches]
+                         for i in range(self.n_threads)]
         # List of HTTP response
         responses = list(self.executor.map(self.get_batch, batch_urllist))
-        return list(itertools.chain(*responses))    # Return 1 sequence of responses
+        return list(itertools.chain(*responses))  # Return 1 sequence of responses
 
     def get_json(self, url):
         """open URL and return JSON contents"""
-#         result = requests.get(url,timeout=1).json()
-        result= self.client.nearest(coordinates=[(url[1],url[0])])
+        #         result = requests.get(url,timeout=1).json()
+        print(url[1])
+        result = self.client.nearest(coordinates=[(url[1], url[0])])
         return result
 
     def get_batch(self, urllist):

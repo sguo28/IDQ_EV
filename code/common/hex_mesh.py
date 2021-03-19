@@ -1,3 +1,4 @@
+
 # from config.settings import LON_WIDTH, LAT_WIDTH, MIN_LAT, MIN_LON, MAP_WIDTH, MAP_HEIGHT, DELTA_LON, DELTA_LAT
 import numpy as np
 import geopandas as gpd

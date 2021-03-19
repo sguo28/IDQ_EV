@@ -2,7 +2,7 @@ from config.hex_setting import hex_shp_path, charging_station_shp_path, NUM_NEAR
     TIMESTEP, START_OFFSET, SIM_DAYS, START_TIME
 from common.time_utils import get_local_datetime
 from simulator.simulator import Simulator
-from dqn_agent.dqn_agent import DeepQNetwork
+from dqn_agent.dqn_agent import DeepQNetworkAgent
 
 # ---------------MAIN FILE---------------
 
@@ -17,7 +17,7 @@ if __name__ == '__main__':
         simulator = Simulator(start_time, TIMESTEP)
         simulator.init(hex_shp_path, charging_station_shp_path, trip_file, travel_time_file, NUM_NEAREST_CS)
 
-        q_network = DeepQNetwork()
+        dqn_agent = DeepQNetworkAgent()
         n_steps = int(3600 * 24 / TIMESTEP)  # 60 per minute
         with open('logs/parsed_results_new.csv', 'w') as f:
             f.writelines(
@@ -36,6 +36,6 @@ if __name__ == '__main__':
                                                            num_matches, total_num_arrivals, total_removed_passengers,
                                                            num_assigned, num_waitpile, num_tobedisptached))
 
-                    # state,action,next_state,reward,flag = Sim_experiment.simulator.dump_transition_batch()
-                    # print(Sim_experiment.simulator.dump_transition_batch())
-                    # Sim_experiment.q_network.add_transition(Sim_experiment.simulator.dump_transition_batch())
+                    state,action,next_state,reward,flag = simulator.dump_transition_batch()
+                    print(state)
+                    # Sim_experiment.dqn_agent.add_transition(Sim_experiment.simulator.dump_transition_batch())

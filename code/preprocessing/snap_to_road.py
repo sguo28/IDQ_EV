@@ -58,12 +58,11 @@ if __name__ == '__main__':
     # print("extract {} rows".format(len(df)))
     # df.to_csv(args.output_file)
 
-    df = gpd.read_file('data/NYC_shapefiles/clustered_hex.shp')
+    df = gpd.read_file('../data/NYC_shapefiles/clustered_hex.shp')
 
     snapped_hex = create_snapped_hex(df,engine)
-    print(snapped_hex.head)
-    snapped_hex.to_file('data/NYC_shapefiles/tagged_clustered_hex.shp')
-    selected_hex = snapped_hex['tagged_lon'!=-1]
+    snapped_hex.to_file('../data/NYC_shapefiles/tagged_clustered_hex1.shp')
+    # selected_hex = snapped_hex['tagged_lon'!=-1]
 
     # print((snapped_hex[snapped_hex['tagged_coord']!=-1]).shape[0],snapped_hex.shape[0])
 

@@ -3,6 +3,7 @@
 import polyline
 from .async_requester import AsyncRequester
 from config.hex_setting import OSRM_HOSTPORT, SPEED
+from common import mesh, geoutils
 
 class OSRMEngine(object):
     """Sends and parses asynchronous requests from list of O-D pairs"""
@@ -24,7 +25,6 @@ class OSRMEngine(object):
             location = nearest_point["location"]
             distance = nearest_point["distance"]
             resultlist.append((location, distance))
-
         return resultlist
 
     def route(self, od_list, decode=True):
@@ -46,24 +46,33 @@ class OSRMEngine(object):
 
         return resultlist
 
-    def route_hex(self, origin_coord, dest_coord, decode=True):
+    def route_hex(self, od_list, decode=False):
         """Input list of Origin-Destination latlong pairs, return
         tuple of (trajectory latlongs, distance, triptime)"""
-        urllist = [self.get_route_url(origin_coord, dest_coord)]
-        responses = self.async_requester.send_async_requests(urllist)
-        # resultlist = []
+        print(od_list[1])
+        responses = self.async_requester.sequential_route(od_list)
+
+        resultlist = []
         for res in responses:
             if "routes" not in res:
                 continue
+            ##we return the first/last coordinate of each step segment of routes, and the corresponding distance and travel time.
             route = res["routes"][0]    # Getting the next route available
-            triptime = route["duration"]
-            if decode:
-                trajectory = polyline.decode(route['geometry'])
-            else:
-                trajectory = route['geometry']
-            # resultlist.append((trajectory, triptime))
+            print(sum([item['duration'] for item in route['legs'][0]['steps']]))
 
-        return trajectory, triptime
+            trajectory=[[item['geometry']['coordinates'][0], item['geometry']['coordinates'][-1]] for item in
+             route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
+            triptime = [item['duration'] for item in
+             route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
+            distance = [item['distance'] for item in
+             route['legs'][0]['steps'][:-1]]
+            # if decode:
+            #     trajectory = polyline.decode(route['geometry'])
+            # else:
+            #     trajectory = route['geometry']
+            resultlist.append([trajectory, triptime,distance])
+
+        return resultlist # trajectory, triptime
 
     # Getting trajectory, time from cache if exists, and storing it to the cache if it does not exsist
     # def get_route_cache(self, l, a):
@@ -110,25 +119,40 @@ class OSRMEngine(object):
             eta_list = [d[0] for d in res["durations"][:-1]]
             resultlist.append(eta_list)
         return resultlist
-
     def eta_many_to_many(self, origins, destins):
-        url = self.get_eta_many_to_many_url(origins, destins)
-        res = self.async_requester.send_async_requests([url])[0]
-        try:
-            eta_matrix = res["durations"]
-        except:
-            print(origins, destins, res)
-            raise
-        return eta_matrix*SPEED
+        origins_lon, origins_lat = zip(*origins)
+        destins_lon, destins_lat = zip(*destins)
+        origins_lon, origins_lat, destins_lon, destins_lat = map(np.array, [origins_lon, origins_lat, destins_lon, destins_lat])
+        d = geoutils.great_circle_distance(origins_lon[:, None],origins_lat[:, None],
+                                           destins_lon, destins_lat)
+        return d
+
+    # def eta_many_to_many(self, origins, destins):
+    #     '''
+    #     todo: finish wrapping it
+    #     :param origins:
+    #     :param destins:
+    #     :return: trip duration matrix
+    #     '''
+    #     res = [self.async_requester.combine_async_route([origin,destin])[0] for origin,destin in zip(origins,destins)]
+    #     # url = self.get_eta_many_to_many_url(origins, destins)
+    #     # res = self.async_requester.send_async_requests([url])[0]
+    #     try:
+    #         eta_matrix = res["durations"]
+    #     except:
+    #         print(origins, destins, res)
+    #         raise
+    #     return eta_matrix #it's a time matrix, think about *SPEED
 
 
     def get_route_url(cls, from_lonlat, to_lonlat):
         """Get URL for osrm backend call for arbitrary to/from latlong pairs"""
+
         urlholder = """http://{hostport}/route/v1/driving/{lon0},{lat0};{lon1},{lat1}?overview=full""".format(
             hostport=OSRM_HOSTPORT,
             lon0=from_lonlat[0],
             lat0=from_lonlat[1],
-            lon1=to_lonlat[1],
+            lon1=to_lonlat[0],
             lat1=to_lonlat[1]
             )
         return urlholder
@@ -156,7 +180,6 @@ class OSRMEngine(object):
             last_idx=len(latlon_list) - 1
         )
         return urlholder
-
 
     def get_eta_many_to_many_url(cls, from_lonlat_list, to_lonlat_list):
         lonlat_list = from_lonlat_list + to_lonlat_list
