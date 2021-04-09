@@ -57,8 +57,9 @@ class OSRMEngine(object):
             responses = self.async_requester.sequential_route(od_list[i:i+step],annotations)
             for res in responses:
                 if "routes" not in res:
-                    continue
-                if annotations == False:
+                    # continue
+                    resultlist.append([[],[],[]])
+                else:
                     ##we return the first/last coordinate of each step segment of routes, and the corresponding distance and travel time.
                     route = res["routes"][0]    # Getting the next route available
 
@@ -69,17 +70,18 @@ class OSRMEngine(object):
                     distance = [item['distance'] for item in
                      route['legs'][0]['steps'][:-1]]
                     resultlist.append([trajectory, triptime,distance])
-                else:
-                    route = res['routes'][0]
-                    trajectory = [[item['geometry']['coordinates'][0],item['geometry']['coordinates'][-1]] for item in route['legs'][0]['steps'][:-1]]
-                    duration = [item['duration'] for item in route['legs'][0]['steps'][:-1]]
-                    distance = [item['distance'] for item in route['legs'][0]['steps'][:-1]]
-                    precise_node_id = route['legs'][0]['annotation']['nodes']
-                    node_id = [item for item in precise_node_id if item < int(1e8)]
-                    precise_speed = route['legs'][0]['annotation']['speed']
-                    precise_duration = route['legs'][0]['annotation']['duration']
-                    precise_distance = route['legs'][0]['annotation']['distance']
-                    resultlist.append([trajectory, duration, distance,node_id,precise_speed,precise_duration,precise_distance])
+            print('Iteration {} finished'.format(i))
+                # else: # for more detailed info (used for FHV trajectory query)
+                #     route = res['routes'][0]
+                #     trajectory = [[item['geometry']['coordinates'][0],item['geometry']['coordinates'][-1]] for item in route['legs'][0]['steps'][:-1]]
+                #     duration = [item['duration'] for item in route['legs'][0]['steps'][:-1]]
+                #     distance = [item['distance'] for item in route['legs'][0]['steps'][:-1]]
+                #     precise_node_id = route['legs'][0]['annotation']['nodes']
+                #     node_id = [item for item in precise_node_id if item < int(1e8)]
+                #     precise_speed = route['legs'][0]['annotation']['speed']
+                #     precise_duration = route['legs'][0]['annotation']['duration']
+                #     precise_distance = route['legs'][0]['annotation']['distance']
+                #     resultlist.append([trajectory, duration, distance,node_id,precise_speed,precise_duration,precise_distance])
         return resultlist
 
     # Getting trajectory, time from cache if exists, and storing it to the cache if it does not exsist

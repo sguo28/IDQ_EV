@@ -1,7 +1,7 @@
 from numpy.core.fromnumeric import mean
 from novelties import status_codes
 from collections import deque
-from config.hex_setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD
+from config.hex_setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD, PER_TICK_DISCOUNT_FACTOR
 
 
 class chargingpile:
@@ -126,6 +126,7 @@ class charging_station:
         if len(self.queue)/(self.num_dcfc_pile+self.num_l2_pile) <= QUEUE_LENGTH_THRESHOLD: # we seperate dcfc and l2, so either of the number must be 0.
             self.queue.append(veh)
             veh.charging_wait = 0  # no wait at the beginning
+            # print(veh.state.origin_hex,veh.state.current_hex, veh.state.destination_hex, veh.state.per_tick_coords, self.hex_id,self.location)
             self.hex.remove_veh(veh)  # remove this vehicle from the hex zone
         else:
             veh.quick_end_charge()  # quick pop out the vehicle if the queue is long.
@@ -136,9 +137,6 @@ class charging_station:
     def get_average_waiting_time(self):
         if len(self.waiting_time) < 1:
             return 0.0
-        else:
-            return mean(self.waiting_time[-20:])
-
     def get_served_num(self):
         return sum([cp.served_num for cp in self.piles])
 

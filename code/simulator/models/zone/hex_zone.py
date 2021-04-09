@@ -190,7 +190,8 @@ class hex_zone:
             else:
                 # Get target destination and key to cache
                 target, charge_flag, target_hex_id, cid = self.convert_action_to_destination(vehicle, action_id)
-                vehicle.state.current_hex = target_hex_id
+                vehicle.state.destination_hex = target_hex_id
+                vehicle.state.origin_hex = vehicle.state.hex_id
                 vehicle.state.need_route = True
                 if charge_flag == 0:
                     if isinstance(vehicle.state.current_hex, list): print('relo index wrong')

@@ -1,12 +1,13 @@
 import pickle
 import time
+from scipy.spatial import cKDTree
 from logging import getLogger
 from random import randrange
 import geopandas as gpd
 import numpy as np
-from scipy.spatial import KDTree
+# from scipy.spatial import KDTree
 from config.hex_setting import NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, HEX_ROUTE_FILE, \
-    CS_DATA_PATH, STORE_TRANSITION_CYCLE, SIM_DAYS, ALL_SUPERCHARGING, N_VEHICLES, \
+    ALL_HEX_ROUTE_FILE, CS_DATA_PATH, STORE_TRANSITION_CYCLE, SIM_DAYS, ALL_SUPERCHARGING, N_VEHICLES, \
     N_DUMMY_VEHICLES, N_DQN_VEHICLES, MAP_WIDTH, MAP_HEIGHT, NUM_CHANNELS
 from logger import sim_logger
 from novelties import agent_codes, status_codes
@@ -34,19 +35,18 @@ class Simulator(object):
         # DQN for getting actions and dumping transitions
         self.all_transitions = []
         self.charging_station_collections = []
-        self.hex_coords_list = [[0,0]]
+        self.snapped_hex_coords_list = [[0,0]]
         self.num_match = 0
         self.total_num_arrivals = 0
         self.total_num_removed_pass = 0
         self.total_num_served_pass = 0
         self.total_num_longwait_pass = 0
         self.total_idled_vehicles = 0
-        self.charging_station_ids = []
         self.global_state_tensor = np.zeros(
             (int(STORE_TRANSITION_CYCLE / 60), NUM_CHANNELS, MAP_WIDTH, MAP_HEIGHT))  # t, c, w, h
         self.global_state_tensor[:, 2] = 1e6  # queue length
-        self.no_charge_trial = NO_CHARGE
-        self.global_matching_trail = GLOBAL_MATCHING
+        self.no_charge = NO_CHARGE
+        self.global_matching = GLOBAL_MATCHING
 
     def reset(self, start_time=None, timestep=None):
         if start_time is not None:
@@ -77,9 +77,10 @@ class Simulator(object):
             for lines in f:
                 line = lines.strip().split(',')
 
-                num, ilat, ilon, hex_id, type = line
+                _, num, ilat, ilon, hex_id, type = line
                 if ALL_SUPERCHARGING:
                     type = 1
+                _,hex_id=self.hex_kdtree.query((ilon,ilat)) #match the hex_id
                 hex = self.hex_zone_collection[int(hex_id)]
                 hex.n_charges += 1
                 if type == 0:
@@ -102,20 +103,20 @@ class Simulator(object):
         '''
         df = gpd.read_file(file_hex)  # tagged_cluster_hex
         charging_stations = gpd.read_file(file_charging)  # point geometry
-        self.charging_kdtree = KDTree(charging_stations[['lon', 'lat']])
-        self.hex_kdtree = KDTree(df[['lon', 'lat']])
-        with open(HEX_ROUTE_FILE, 'rb') as f:
+        self.charging_kdtree = cKDTree(charging_stations[['snap_lon', 'snap_lat']])
+        self.hex_kdtree = cKDTree(df[['snap_lon', 'snap_lat']])
+        with open(ALL_HEX_ROUTE_FILE, 'rb') as f:
             self.hex_routes = pickle.load(f)
 
-        if self.global_matching_trail:
+        if self.global_matching:
             df['cluster_la'] = 0 # set a mask to combine to one matching zone.
         matchzones = np.unique(df['cluster_la'])
 
         hex_ids = df.index.tolist()
         print('Number of total hexagons:', len(hex_ids))
 
-        hex_coords = df[['lon', 'lat']].to_numpy()  # coord
-        self.hex_coords_list = hex_coords.tolist()
+        hex_coords = df[['snap_lon', 'snap_lat']].to_numpy()  # coord
+        self.snapped_hex_coords_list = df[['snap_lon', 'snap_lat']].values.tolist()
         hex_to_match = df['cluster_la'].to_numpy()  # corresponded match zone id
         xy_coords = df[['col_id', 'row_id']].to_numpy()
         demand = self.process_trip(trip_file)
@@ -133,9 +134,8 @@ class Simulator(object):
         # we initiaze the set of hexagone zones first
         maxdemand = 0
         total_demand = 0
-        charging_coords = charging_stations[['lon', 'lat']].values.tolist()
-        charging_hexes = charging_stations[['hex_id']].values.tolist()
-        charging_hexes = [item[0] for item in charging_hexes]
+        charging_coords = charging_stations[['snap_lon', 'snap_lat']].values.tolist()
+        _,charging_hexes=self.hex_kdtree.query(charging_coords)
         for h_idx, coords, xy_coord, match_id in zip(hex_ids, hex_coords, xy_coords, hex_to_match):
             neighbors = df[df.geometry.touches(df.geometry[h_idx])].index.tolist()  # len from 0 to 6
             _, charging_idx = self.charging_kdtree.query(coords, k=n_nearest)  # charging station id
@@ -215,12 +215,12 @@ class Simulator(object):
         # t_v_update=time.time()-t1
         # t1 = time.time()
         self.vehicle_step_update(self.__dt, self.__t)  # interpolate routes and update vehicle status
+
         # print('veh step time', time.time() - t1)
 
         # update the demand for each matching zone
         # t1 = time.time()
         [c.async_demand_gen(self.__t) for c in self.match_zone_collection]
-
 
 
     def update(self):
@@ -255,10 +255,15 @@ class Simulator(object):
 
         vehs_to_update = [veh for hex in self.hex_zone_collection.values() for veh in hex.vehicles.values()]
 
-        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.hex_coords_list) for vehicle in vehs_to_update]
 
-        self.charging_station_ids = [vehicle.get_assigned_cs_id() \
-                                     for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]
+        # veh_hex_to_update = [veh for veh in vehs_to_update if veh.state.status == status_codes.V_CRUISING and veh.state.real_time_location]
+        if vehs_to_update:
+            _, real_time_hex_id = self.hex_kdtree.query([veh.state.real_time_location for veh in vehs_to_update])
+
+            for hex_id, veh in zip(real_time_hex_id,vehs_to_update):
+                veh.state.current_hex = hex_id
+
+        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.snapped_hex_coords_list, self.__t) for vehicle in vehs_to_update]
 
         [self.charging_station_collections[vehicle.get_assigned_cs_id()].add_arrival_veh(vehicle) \
          for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]
@@ -276,15 +281,26 @@ class Simulator(object):
     def get_local_infos(self):
         state_batches = []
         num_valid_relocations = []
-        od_pairs = []
+        excluded_od_pairs = []
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
                 if vehicle.state.agent_type == agent_codes.dqn_agent and vehicle.state.status == status_codes.V_IDLE:
                     state_batches.append(vehicle.dump_states(self.__t))  # (tick, hex_id, SOC)
                     num_valid_relocations.append(len([0] + self.hex_zone_collection[vehicle.get_hex_id()].neighbor_hex_id))
-                if len(vehicle.non_included_od_pair) >0:
-                    od_pairs.append(vehicle.non_included_od_pair)
-        return state_batches, num_valid_relocations, od_pairs
+                if vehicle.require_online_query:
+                    excluded_od_pairs += [vehicle.non_included_od_pair]
+        return state_batches, num_valid_relocations, excluded_od_pairs
+
+    def attach_route_info(self, response):
+        for hex in self.hex_zone_collection.values():
+            for vi,vehicle in enumerate(hex.vehicles.values()):
+                if vehicle.require_online_query:
+                    # print('response is like:',response)
+                    vehicle.state.route = response[vi][0]
+                    vehicle.state.time_to_destination = response[vi][1]
+                    vehicle.state.travel_dist = response[vi][2]
+                    vehicle.require_online_query = False
+
     def get_global_state(self):
         # global_state_slice = np.zeros((NUM_CHANNELS, MAP_WIDTH, MAP_HEIGHT))  # t, c, w, h
         # global_state_slice[2] = 1e6  # queue length
@@ -364,8 +380,8 @@ class Simulator(object):
             vehicle_hex_id].lat)  # update its coordinate with the centroid of the hexagon
 
         # append this new available vehicle to the hexagon zone
-        self.hex_zone_collection[vehicle_hex_id].add_veh(Vehicle(VehicleState(vehicle_id, location, vehicle_hex_id,
-                                                                              agent_type)))
+        self.hex_zone_collection[vehicle_hex_id].add_veh(Vehicle(
+            VehicleState(vehicle_id, location, vehicle_hex_id,agent_type),self.no_charge,self.global_matching))
 
     def __update_time(self):
         self.__t += self.__dt
@@ -384,22 +400,21 @@ class Simulator(object):
         convert transitions to batches of state, action, next_state, and off-duty flag.
         :return:
         """
-        state, action, next_state, reward, num_valid_relos_ = None, None, None, None, None
-
+        state, action, next_state, reward, time_steps, num_valid_relos_ = None, None, None, None, None, None
         all_transitions = np.array(self.all_transitions, dtype=object)
         if len(all_transitions) > 0:
             # print('First row of Transitions are:',all_transitions[1])
-            [state, action, next_state, reward] = [all_transitions[:, i] for i in range(4)]
+            [state, action, next_state, reward, time_steps] = [all_transitions[:, i] for i in range(5)]
         if state is not None:
             num_valid_relos_ = [len([0] + self.hex_zone_collection[state_i[1]].neighbor_hex_id) for state_i in
                                 next_state]  # valid relocation for next state.
 
-        return state, action, next_state, reward, num_valid_relos_
+        return state, action, next_state, reward, time_steps, num_valid_relos_
 
     def get_current_time(self):
         return self.__t
 
-    def summarize_metrics(self,demand_supply_gap_file, cruising_od_file, matching_od_file):
+    def summarize_metrics(self,demand_supply_gap_file, charging_od_file, cruising_od_file, matching_od_file):
 
         all_vehicles = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
                         vehicle.state.agent_type == agent_codes.dqn_agent]
@@ -414,17 +429,20 @@ class Simulator(object):
         num_charging = sum(
             [sum([1 for p in cs.piles if p.occupied == True]) for cs in self.charging_station_collections])
         n_matches = self.num_match
-
+        average_cumulated_earning = np.mean([veh.total_earnings for veh in all_vehicles])
         total_num_arrivals = self.total_num_arrivals
         total_removed_passengers = self.total_num_longwait_pass + self.total_num_served_pass
         total_num_longwait_pass = self.total_num_longwait_pass
         total_num_served_pass = self.total_num_served_pass
         [demand_supply_gap_file.writelines('{},{},{}\n'.format(self.__t,hex.hex_id, (hex.arrivals[-1] - len(hex.vehicles.keys())) )) for hex in self.hex_zone_collection.values()]
-        [cruising_od_file.writelines('{},{},{}\n'.format(self.__t,veh.state.hex_id, veh.state.current_hex)) for veh in all_vehicles if veh.state.status in [status_codes.V_STAY,status_codes.V_CRUISING,status_codes.V_WAYTOCHARGE]]
-        [matching_od_file.writelines('{},{},{}\n'.format(self.__t,veh.state.hex_id, veh.state.current_hex)) for veh in all_vehicles if veh.state.status == status_codes.V_ASSIGNED]
+        [charging_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.charging_od_pairs]
+        [cruising_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.repositioning_od_pairs]
+        [matching_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.matching_od_pairs]
+        [veh.reset_od_pairs() for veh in all_vehicles]
+
         return num_idle, num_serving, num_charging, num_cruising, n_matches, total_num_arrivals, \
                total_removed_passengers, num_assigned, num_waitpile, num_tobedisptached, num_offduty, \
-               average_reduced_SOC, total_num_longwait_pass, total_num_served_pass
+               average_reduced_SOC, total_num_longwait_pass, total_num_served_pass, average_cumulated_earning
 
     def reset_storage(self):
         self.all_transitions = []
@@ -432,5 +450,3 @@ class Simulator(object):
             (int(STORE_TRANSITION_CYCLE / 60), NUM_CHANNELS, MAP_WIDTH, MAP_HEIGHT))  # t, c, w, h
         self.global_state_tensor[:, 2] = 1e6
 
-    def get_charging_station_ids(self):
-        return self.charging_station_ids

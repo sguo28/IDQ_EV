@@ -135,7 +135,7 @@ class matching_zone(object):
         #     'Current matching zone={}, Total matched passengers={}, Number of passengers={}, Number of drivers={}'.format(
         #         self.matching_zone_id, self.num_matches, len(passengers.keys()), len(vehicles.keys())))
         if len(passengers.keys()) > 0 and len(vehicles.keys()) > 0:
-            vehicles = {key: value for key, value in vehicles.items() if value.state.status in [status_codes.V_IDLE,status_codes.V_STAY] and value.state.SOC>0.1}
+            vehicles = {key: value for key, value in vehicles.items() if value.state.status in [status_codes.V_IDLE,status_codes.V_STAY, status_codes.V_CRUISING]}
             if len(vehicles.keys()) > 0:
                 self.num_matches += self.match_requests(vehicles, passengers)
 
@@ -146,7 +146,9 @@ class matching_zone(object):
         :param passengers:
         :return:
         """
-        v_hex_id = [veh.state.hex_id for veh in vehicles.values()]
+        #  idle+stay
+        v_hex_id = [veh.state.current_hex for veh in vehicles.values()]
+
         vehs = [veh for veh in vehicles.values()]
 
         r_hex_id = [customer.request.origin_id for customer in passengers.values()]
@@ -163,7 +165,7 @@ class matching_zone(object):
             customer.matched = True
             vehicle.customer = customer  # add matched passenger to the current on
             vehicle.state.need_route = True
-            vehicle.state.current_hex = customer.get_origin()
+            # vehicle.state.current_hex = customer.get_origin()
             vehicle.head_for_customer(customer.get_origin_lonlat(),customer.get_origin())
 
         return len(assignments)  # record nums of getting matched

@@ -33,17 +33,22 @@ class AsyncRequester(object):
 
     async def async_route(self, od_list,annotations=False):
         Client = osrm.AioHTTPClient(host='http://localhost:5000')
-        response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt,steps=True,annotations = annotations)) for pt in od_list])
+        # responses = []
+        # for pt in od_list:
+        #     print('checkpoint',pt)
+        #     response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt,steps=True))])
+        #     responses.append(response)
+        response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt,steps=True,continue_straight=osrm.continue_straight.false)) for pt in od_list])
         await Client.close()
         return response
 
     def sequential_route(self,od_list,annotations):
         idx=0
         response=[]
-        step=2000
+        step=3000
         for i in range(0,len(od_list),step):
             response+=self.combine_async_route(od_list[i:i+step],annotations)
-            time.sleep(0.2)
+            time.sleep(0.1)
         # for pt in od_list:
         #     response.append(self.client.route(coordinates=pt,steps=True))
             idx+=step

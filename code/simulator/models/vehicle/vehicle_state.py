@@ -1,6 +1,6 @@
 from novelties import status_codes
 from novelties import vehicle_types
-# from config.hex_setting import FULL_CHARGE_PRICE
+from config.hex_setting import TARGET_SOC, TARGET_SOC_STD
 import numpy as np
 
 
@@ -13,7 +13,8 @@ class VehicleState(object):
         'queueing_duration', 'current_capacity', 'max_capacity', 'driver_base_per_trip', 'mileage',
         'mile_of_range', 'target_SOC', 'SOC', 'agent_type', 'charging_threshold', 'hex_id', 'current_hex',
         'vehicle_id', 'dispatch_action_id', 'need_route','route', 'real_time_location', 'need_interpolate',
-        'per_tick_dist', 'per_tick_coords','total_travel_distance','duration_by_status','require_dump_transition']
+        'per_tick_dist', 'per_tick_coords','total_travel_distance','duration_by_status','require_dump_transition',
+        'destination_hex','origin_hex']
 
     def __init__(self, id, location, hex_id, agent_type):
         """
@@ -47,7 +48,7 @@ class VehicleState(object):
         self.mile_of_range = self.set_range()
         self.target_SOC = round(min(1, max(0, np.random.normal(0.90, 0.02))),3)
         self.set_price_rates()
-        self.SOC = round(min(1, max(0, np.random.normal(0.90, 0.02))),3)  # SOC~N(90%,2%)
+        self.SOC = round(min(1, max(0, np.random.normal(TARGET_SOC, TARGET_SOC_STD))),4)  # SOC~N(90%,2%)
         self.charging_threshold = 0.2
         self.dispatch_action_id = 0
         self.need_route = False
@@ -56,6 +57,8 @@ class VehicleState(object):
         self.per_tick_dist = []
         self.per_tick_coords = []
         self.real_time_location = location # first use initialized location
+        self.destination_hex = None
+        self.origin_hex=None
         self.duration_by_status = [[] for _ in range(7)] # 7 status codes in total
         self.require_dump_transition = False  # this is a flag to show if the vehicle has a full cycle
 
