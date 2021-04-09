@@ -1,11 +1,8 @@
-import numpy as np
 from novelties import status_codes
 from collections import defaultdict
 from config.hex_setting import REJECT_TIME, SEC_PER_MIN
-import ray
 
 
-@ray.remote
 class matching_zone(object):
     def __init__(self, m_id, hex_zones, time_od):
         """
@@ -193,5 +190,7 @@ class matching_zone(object):
 
     def get_metrics(self):
         num_arrivals = sum([h.get_num_arrivals() for h in self.hex_zones])
-        num_removed_pass = sum([h.get_num_removed_pass() for h in self.hex_zones])
-        return [self.num_matches, num_arrivals, num_removed_pass]
+        num_long_wait_pass = sum([h.get_num_longwait_pass() for h in self.hex_zones])
+        num_served_pass = sum([h.get_num_served_pass() for h in self.hex_zones])
+        num_idle_vehs = len([veh for h in self.hex_zones for veh in h.vehicles.values() if veh.state.status == status_codes.V_IDLE])
+        return [self.num_matches, num_arrivals, num_long_wait_pass, num_served_pass, num_idle_vehs]

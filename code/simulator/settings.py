@@ -21,9 +21,9 @@ FLAGS.verbose = bool(False)  #print log verbosely.")
 FLAGS.enable_pooling = bool(False)  #Enable RideSharing/CarPooling") #1
 FLAGS.enable_pricing = bool(False)  #Enable Pricing Novelty") #1
 
-FLAGS.vehicles = int(1000)  #number of vehicles")
+FLAGS.vehicles = int(3000)  #number of vehicles")
 FLAGS.dummy_vehicles = int(1) #number of vehicles using dummy agent")
-FLAGS.dqn_vehicles = int(999)  #number of vehicles using dqn agent")
+FLAGS.dqn_vehicles = int(2999)  #number of vehicles using dqn agent")
 
 FLAGS.pretrain = int(0)  #run N pretraining steps using pickled experience memory.")
 FLAGS.start_time = int(1464753600 + 3600 * 5)  #simulation start datetime (unixtime)")

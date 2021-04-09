@@ -191,16 +191,7 @@ class hex_zone:
         # generate dispatch commands, dump transitions to q network
         if len(vehicles) == 0:
             return []
-        
-        reward_list =deque([0],maxlen=100)
-        non_dummy=[vehicles[vid] for vid in vehicles if vehicles[vid].state.type!=agent_codes.dummy_agent]
         commands = self.get_dispatch_decisions(vehicles,current_time)
-        for vehicle in non_dummy:
-            if len(vehicle.get_transitions())>0:
-                    state, action, next_state, reward,flag = vehicle.get_transitions()[-1]
-                    self.q_network.memory.push(state, action, next_state, reward,flag)
-                    reward_list.append(reward)
-        # self.q_network.train() # start_time = FLAGS.start_time + int(60 * 60 * 24 * FLAGS.start_offset)
         
         # perform dispatch
         od_pairs = []
@@ -235,31 +226,6 @@ class hex_zone:
                 c_id = self.nearest_cs[command['action']]
                 charging_station_repo = ChargingRepository.get_charging_station(c_id)
                 dispatched_veh.head_for_charging_station(command["destination"], triptime,charging_station_repo, route)
-
-
-    def predict_best_action(self, vehicle,current_time):
-        
-        if self.q_network is None:
-            aidx, offduty = 0, 0
-        else:
-            # print(vehicle_state.vehicle_id)
-            state_rep = [current_time,vehicle.state.vehicle_id,vehicle.state.hex_id,vehicle.state.SOC] # vehicle_state.assigned_hex.get_nearest_cs(), get_cs_waiting_time
-            
-            aidx = self.q_network.get_action(state=state_rep,num_valid_relo=len([0]+self.neighbor_hex_id))
-
-            offduty = 0
-        return aidx, offduty
-
-    def get_state_batches(self, tbd_vehicles,current_time):
-        '''
-        :vehicles: batches of to-be-dispatched vehicles
-        '''
-        # if self.q_network is None:
-        #     aidx, offduty = 0, 0
-        
-        state_reps = [[current_time,tbd_vehicles[vid].state.vehicle_id,tbd_vehicles[vid].state.hex_id,tbd_vehicles[vid].state.SOC] for vid in tbd_vehicles]  
-        # vehicle_state.assigned_hex.get_nearest_cs(), get_cs_waiting_time
-        return state_reps
         
 
     def get_dispatch_decisions(self, tbd_vehicles,current_time):
@@ -285,6 +251,41 @@ class hex_zone:
             dispatch_commands.append(command)
         return dispatch_commands
 
+    def predict_best_action(self, vehicle,current_time):
+        
+        if self.q_network is None:
+            aidx, offduty = 0, 0
+        else:
+            # print(vehicle_state.vehicle_id)
+            state_rep = [current_time,vehicle.state.vehicle_id,vehicle.state.hex_id,vehicle.state.SOC] # vehicle_state.assigned_hex.get_nearest_cs(), get_cs_waiting_time
+            
+            aidx = self.q_network.get_action(state=state_rep,num_valid_relo=len([0]+self.neighbor_hex_id))
+
+            offduty = 0
+        return aidx, offduty
+
+    def get_state_batches(self, tbd_vehicles,current_time):
+        '''
+        :vehicles: batches of to-be-dispatched vehicles
+        '''
+        # if self.q_network is None:
+        #     aidx, offduty = 0, 0
+        
+        state_reps = [[current_time,tbd_vehicles[vid].state.vehicle_id,tbd_vehicles[vid].state.hex_id,tbd_vehicles[vid].state.SOC] for vid in tbd_vehicles]  
+        # vehicle_state.assigned_hex.get_nearest_cs(), get_cs_waiting_time
+        return state_reps
+    def dump_transitions(self,vehicles):
+        non_dummy=[vehicles[vid] for vid in vehicles if vehicles[vid].state.type!=agent_codes.dummy_agent]
+        transitions = []
+        for vehicle in non_dummy:
+            if len(vehicle.get_transitions())>0:
+                state, action, next_state, reward,flag = vehicle.get_transitions()[-1]
+                transitions.append([state, action, next_state, reward,flag])
+        return transitions
+
+                    # self.q_network.memory.push(state, action, next_state, reward,flag)
+        # self.q_network.train() # start_time = FLAGS.start_time + int(60 * 60 * 24 * FLAGS.start_offset)
+        
 # Get the destination from dispatched vehicles
     def convert_action_to_destination(self, vehicle, a_id):
         '''

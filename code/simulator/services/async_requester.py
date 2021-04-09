@@ -4,6 +4,7 @@ import itertools
 import requests
 import asyncio
 import osrm
+import time
 
 
 class AsyncRequester(object):
@@ -30,24 +31,27 @@ class AsyncRequester(object):
         results = loop.run_until_complete(self.async_requests(pts))
         return results
 
-    async def async_route(self, od_list):
+    async def async_route(self, od_list,annotations=False):
         Client = osrm.AioHTTPClient(host='http://localhost:5000')
-        response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt)) for pt in od_list])
+        response = await asyncio.gather(*[asyncio.ensure_future(Client.route(coordinates=pt,steps=True,annotations = annotations)) for pt in od_list])
         await Client.close()
         return response
 
-    def sequential_route(self,od_list):
+    def sequential_route(self,od_list,annotations):
         idx=0
         response=[]
-        for pt in od_list:
-            response.append(self.client.route(coordinates=pt,steps=True))
-            idx+=1
-            print(idx)
+        step=2000
+        for i in range(0,len(od_list),step):
+            response+=self.combine_async_route(od_list[i:i+step],annotations)
+            time.sleep(0.2)
+        # for pt in od_list:
+        #     response.append(self.client.route(coordinates=pt,steps=True))
+            idx+=step
         return response
 
-    def combine_async_route(self, od_list):
+    def combine_async_route(self, od_list,annotations):
         loop = asyncio.get_event_loop()
-        results = loop.run_until_complete(self.async_route(od_list))
+        results = loop.run_until_complete(self.async_route(od_list,annotations))
 
         return results
 

@@ -2,9 +2,9 @@
 
 import polyline
 from .async_requester import AsyncRequester
-from config.hex_setting import OSRM_HOSTPORT, SPEED
-from common import mesh, geoutils
-
+from config.hex_setting import OSRM_HOSTPORT
+# from common import geoutils
+import numpy as np
 class OSRMEngine(object):
     """Sends and parses asynchronous requests from list of O-D pairs"""
     def __init__(self, n_threads=8):
@@ -46,33 +46,41 @@ class OSRMEngine(object):
 
         return resultlist
 
-    def route_hex(self, od_list, decode=False):
+    def route_hex(self, od_list, decode=False, annotations = False):
         """Input list of Origin-Destination latlong pairs, return
         tuple of (trajectory latlongs, distance, triptime)"""
-        print(od_list[1])
-        responses = self.async_requester.sequential_route(od_list)
+        # print(od_list[1])
 
+        step=10000
         resultlist = []
-        for res in responses:
-            if "routes" not in res:
-                continue
-            ##we return the first/last coordinate of each step segment of routes, and the corresponding distance and travel time.
-            route = res["routes"][0]    # Getting the next route available
-            print(sum([item['duration'] for item in route['legs'][0]['steps']]))
+        for i in range(0,len(od_list),step):
+            responses = self.async_requester.sequential_route(od_list[i:i+step],annotations)
+            for res in responses:
+                if "routes" not in res:
+                    continue
+                if annotations == False:
+                    ##we return the first/last coordinate of each step segment of routes, and the corresponding distance and travel time.
+                    route = res["routes"][0]    # Getting the next route available
 
-            trajectory=[[item['geometry']['coordinates'][0], item['geometry']['coordinates'][-1]] for item in
-             route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
-            triptime = [item['duration'] for item in
-             route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
-            distance = [item['distance'] for item in
-             route['legs'][0]['steps'][:-1]]
-            # if decode:
-            #     trajectory = polyline.decode(route['geometry'])
-            # else:
-            #     trajectory = route['geometry']
-            resultlist.append([trajectory, triptime,distance])
-
-        return resultlist # trajectory, triptime
+                    trajectory=[[item['geometry']['coordinates'][0], item['geometry']['coordinates'][-1]] for item in
+                     route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
+                    triptime = [item['duration'] for item in
+                     route['legs'][0]['steps'][:-1]]  #not including the last one, which is 0
+                    distance = [item['distance'] for item in
+                     route['legs'][0]['steps'][:-1]]
+                    resultlist.append([trajectory, triptime,distance])
+                else:
+                    route = res['routes'][0]
+                    trajectory = [[item['geometry']['coordinates'][0],item['geometry']['coordinates'][-1]] for item in route['legs'][0]['steps'][:-1]]
+                    duration = [item['duration'] for item in route['legs'][0]['steps'][:-1]]
+                    distance = [item['distance'] for item in route['legs'][0]['steps'][:-1]]
+                    precise_node_id = route['legs'][0]['annotation']['nodes']
+                    node_id = [item for item in precise_node_id if item < int(1e8)]
+                    precise_speed = route['legs'][0]['annotation']['speed']
+                    precise_duration = route['legs'][0]['annotation']['duration']
+                    precise_distance = route['legs'][0]['annotation']['distance']
+                    resultlist.append([trajectory, duration, distance,node_id,precise_speed,precise_duration,precise_distance])
+        return resultlist
 
     # Getting trajectory, time from cache if exists, and storing it to the cache if it does not exsist
     # def get_route_cache(self, l, a):
@@ -119,13 +127,13 @@ class OSRMEngine(object):
             eta_list = [d[0] for d in res["durations"][:-1]]
             resultlist.append(eta_list)
         return resultlist
-    def eta_many_to_many(self, origins, destins):
-        origins_lon, origins_lat = zip(*origins)
-        destins_lon, destins_lat = zip(*destins)
-        origins_lon, origins_lat, destins_lon, destins_lat = map(np.array, [origins_lon, origins_lat, destins_lon, destins_lat])
-        d = geoutils.great_circle_distance(origins_lon[:, None],origins_lat[:, None],
-                                           destins_lon, destins_lat)
-        return d
+    # def eta_many_to_many(self, origins, destins):
+    #     origins_lon, origins_lat = zip(*origins)
+    #     destins_lon, destins_lat = zip(*destins)
+    #     origins_lon, origins_lat, destins_lon, destins_lat = map(np.array, [origins_lon, origins_lat, destins_lon, destins_lat])
+    #     d = geoutils.great_circle_distance(origins_lon[:, None],origins_lat[:, None],
+    #                                        destins_lon, destins_lat)
+    #     return d
 
     # def eta_many_to_many(self, origins, destins):
     #     '''
