@@ -1,0 +1,146 @@
+import argparse
+import time
+import numpy as np
+from common.time_utils import get_local_datetime
+from config.setting import HEX_SHP_PATH, CS_SHP_PATH, NUM_NEAREST_CS, TRIP_FILE, TRAVEL_TIME_FILE, \
+    TIMESTEP, START_OFFSET, SIM_DAYS, N_EPISODE, START_TIME, TRAINING_CYCLE, STORE_TRANSITION_CYCLE
+from collections import defaultdict
+from dqn_agent.dqn_agent_with_cnn.cnn_dqn_agent import DeepQNetworkAgent
+from simulator.simulator_option import Simulator
+# from dqn_option_agent.h_agent import H_Agent
+from dqn_option_agent.f_approx_agent import F_Agent
+
+# ---------------MAIN FILE---------------
+
+def init_column_names(f,g,h,l1,m1,n1):
+    f.writelines(
+        '{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format("time", "num_idle", "num_serving",
+                                                                   "num_charging",
+                                                                   "num_cruising", "num_assigned",
+                                                                   "num_waitpile",
+                                                                   "num_tobedisptached", "num_offduty",
+                                                                   "num_matches", "pass_arrivals",
+                                                                   "longwait_pass",
+                                                                   "served_pass", "removed_pass",
+                                                                   "consumed_SOC_per_cycle",
+                                                                   "average_cumulated_earning"))
+    g.writelines('{},{},{}\n'.format("tick", "cs_id", "destination_cs_id"))
+    h.writelines(
+        '{},{},{}\n'.format("step","hr", "loss"))
+    l1.writelines('{},{},{}\n'.format("step", "hex_zone_id", "demand_supply_gap"))
+    m1.writelines('{},{},{}\n'.format("step", "origin_hex", "destination_hex"))
+    n1.writelines('{},{},{}\n'.format("step", "origin_hex", "destination_hex"))
+
+
+if __name__ == '__main__':
+    """
+    todo: dont forget to remove the epsilon=1.0 and SOC threshold = -10. o.w. all action is randomly selected.
+    """
+    arg = argparse.ArgumentParser("Start running")
+
+    arg.add_argument("--islocal", "-l", default=1, type=bool, help="local matching or global matching")
+    arg.add_argument("--isoption", "-o", default=0, type=bool, help="covering option or not")
+    arg.add_argument("--ischarging", "-c", default=0, type=bool, help="charging or not")
+    args = arg.parse_args()
+    if SIM_DAYS > 0:
+        start_time = START_TIME + int(60 * 60 * 24 * START_OFFSET)  # start_time = 0
+        print("Simulate Episode Start Datetime: {}".format(get_local_datetime(start_time)))
+        end_time = start_time + int(60 * 60 * 24 * SIM_DAYS)
+        print("Simulate Episode End Datetime : {}".format(get_local_datetime(end_time)))
+        islocal = "l" if args.islocal else "nl"
+        isoption = "o" if args.isoption else "no"
+        ischarging = "c" if args.ischarging else "nc"
+        simulator = Simulator(start_time, TIMESTEP, args.isoption, args.islocal, args.ischarging)
+        simulator.init(HEX_SHP_PATH, CS_SHP_PATH, TRIP_FILE, TRAVEL_TIME_FILE, NUM_NEAREST_CS)
+        dqn_agent = DeepQNetworkAgent(simulator.hex_diffusions, args.isoption, args.islocal, args.ischarging)
+        # h_agent = H_Agent(simulator.hex_diffusions, simulator.xy_coords, args.isoption, args.islocal, args.ischarging)
+        f_func_agents = defaultdict()
+        for hr in range(24):
+            f_func_agents[hr] = F_Agent(simulator.hex_diffusions, args.isoption, args.islocal, args.ischarging)
+        n_steps = int(3600 * 24 / TIMESTEP)  # number of time ticks per day
+        with open('logs/parsed_results_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as f, open(
+                'logs/target_charging_stations_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as g, open(
+                'logs/training_hist_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as h, open(
+                'logs/demand_supply_gap_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as l1, open(
+                'logs/cruising_od_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as m1, open(
+                'logs/matching_od_%s_%s_%s.csv' % (isoption, islocal, ischarging), 'w') as n1,\
+                open('logs/vehicle_track/od_trajs.csv', 'w') as traj:
+
+            init_column_names(f,g,h,l1,m1,n1)
+            N_EPISODE = 5
+            for episode in range(N_EPISODE):
+                # reinitialize the status of the simulator
+                simulator.reset(start_time=episode * (end_time - start_time), timestep=TIMESTEP)
+                for day in range(SIM_DAYS):
+                    print("############################ DAY {} SUMMARY ################################".format(day))
+                    for i in range(n_steps):
+                        tick = simulator.get_current_time()
+                        start_tick = time.time()
+                        simulator.step(traj)
+                        t1 = time.time() - start_tick
+                        local_state_batches, num_valid_relos = simulator.get_local_states()
+                        # t2 = time.time() - start_tick
+                        global_state = simulator.get_global_state()
+                        # t3 = time.time() - start_tick
+                        # if tick >0 and np.sum(global_state) == 0: # check if just reset
+                        #     global_state = global_state_slice
+                        if len(local_state_batches) > 0:
+                            action_set = dqn_agent.get_actions(local_state_batches, num_valid_relos, global_state)
+                            simulator.attach_actions_to_vehs(action_set)
+                        # t4 = time.time() - start_tick
+                        simulator.update()  # update time, get metrics.
+                        # t5 = time.time() - start_tick
+
+                        simulator.summarize_metrics(f, l1, g, m1, n1)
+
+                        # dump transitions to DQN module
+                        if tick % STORE_TRANSITION_CYCLE == 0:
+                            simulator.store_transitions_from_veh()
+                            states, actions, next_states, rewards, terminate_flags, time_steps, valid_action_nums_ = simulator.dump_transition_to_dqn()
+                            if states is not None:
+                                pass
+                                # [dqn_agent.add_transition(states, actions, next_states, rewards, terminate_flag,
+                                #                           time_steps, valid_action_num_) for
+                                #  states, actions, next_states, rewards, terminate_flag, time_steps, valid_action_num_ in
+                                #  zip(states, actions, next_states, rewards, terminate_flags, time_steps,
+                                #      valid_action_nums_)]
+                                # print('For episode {}, tick {}, average reward is {}'.format(episode, tick / 60,
+                                #                                                              np.mean(rewards)))
+                            # gstates = simulator.dump_global()
+                            # dqn_agent.add_global_state_dict(gstates)  # a 4-dim np array
+                            # now reset transition and global state
+                            simulator.reset_storage()
+                            # current_hexes, next_hexes = simulator.dump_trajectories_to_option()
+                            # if current_hexes is not None:
+                            #     for current_hex, next_hex in zip(current_hexes, next_hexes):
+                            #         f_func_agents[tick//(60*60)%24].add_hex_pair(current_hex, next_hex)
+
+                        t6 = time.time() - start_tick
+                        t_start = time.time()
+                        # if tick % TRAINING_CYCLE == 0:
+                        #     # dqn_agent.train(h)  # do training for 10 times.
+                        #     # dqn_agent.soft_target_update(1e-3)
+                        #     [f_approx.train_f_function(hr,h) for _ in range(3) for hr, f_approx in f_func_agents.items()]
+
+                        t7 = time.time() - t_start
+
+                # last step transaction dump
+                tick = simulator.get_current_time()
+                simulator.store_global_states()
+                simulator.last_step_transactions(tick)
+                # states, actions, next_states, rewards, terminate_flags, time_steps, valid_action_nums_ = simulator.dump_transition_to_dqn()
+                # if states is not None:
+                #     for states, actions, next_states, rewards, terminate_flag, time_steps, valid_action_num_ in zip(
+                #             states, actions, next_states, rewards, terminate_flags, time_steps, valid_action_nums_):
+                #         dqn_agent.add_transition(states, actions, next_states, rewards, terminate_flag, time_steps,
+                #                                  valid_action_num_)
+                        # h_agent.add_transition(states, actions, next_states, rewards, terminate_flag, time_steps,
+                        #                        valid_action_num_)
+
+                    # print('For tick {}, average reward is {}'.format(tick / 60, np.mean(rewards)))
+                # gstates = simulator.dump_global()
+                # dqn_agent.add_global_state_dict(gstates)  # a 4-dim np array
+                # h_agent.add_global_state_dict(gstates)  # a 4-dim np array
+                print('Finished EP {}'.format(episode))
+
+
