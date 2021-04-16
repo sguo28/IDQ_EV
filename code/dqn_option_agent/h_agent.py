@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import StepLR
 class H_Agent:
 
     def __init__(self, hex_diffusion, xy_coords, isoption=False, islocal=True, ischarging=True):
-        self.learning_rate = LEARNING_RATE  # 1e-4
+        self.learning_rate = 1e-4
         self.gamma = GAMMA
         self.start_epsilon = START_EPSILON
         self.final_epsilon = FINAL_EPSILON
@@ -79,24 +79,23 @@ class H_Agent:
 
         f_threshold_dict = defaultdict()
         middle_mask = defaultdict()
-        term_percentile = 0.05
+        term_percentile = 10
 
         for hr in range(24):
             f_middle_sorted = np.sort(self.all_f_values[hr])
-            f_lower_threshold = f_middle_sorted[int(len(f_middle_sorted) * (0.5 - term_percentile))]
-            f_higher_threshold = f_middle_sorted[int(len(f_middle_sorted) * (0.5 + term_percentile))]
-
+            f_lower_threshold = np.percentile(f_middle_sorted ,(50 - term_percentile))
+            f_higher_threshold = np.percentile(f_middle_sorted ,(50 + term_percentile))
             f_threshold_dict[hr] = [f_lower_threshold, f_higher_threshold]
 
             middle_mask[hr] = [np.sign(f_value - f_threshold_dict[hr][0]) * np.sign(f_threshold_dict[hr][1] - f_value)
                                for f_value in self.all_f_values[hr]]
         self.middle_mask = middle_mask  # 24 by 1347
-        # with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%(0),'w') as ts:
-        #     for hr in range(24):
-        #         for hex_id,term_flag in enumerate(middle_mask[hr]):
-        #             if term_flag == 1:
-        #                 ts.writelines('{},{}\n'.format(hr,hex_id))
-        #     print('finished record terminal state!!!')
+        with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%(0),'w') as ts:
+            for hr in range(24):
+                for hex_id,term_flag in enumerate(middle_mask[hr]):
+                    if term_flag == 1:
+                        ts.writelines('{},{}\n'.format(hr,hex_id))
+            print('finished record terminal state!!!')
 
     def get_f_values(self, state_batch):
         """
@@ -179,6 +178,7 @@ class H_Agent:
 
         action_batch = torch.from_numpy(np.array(batch.action)).unsqueeze(1).to(dtype=torch.int64, device=self.device)
 
+        time_step_batch = torch.from_numpy(np.array(batch.time_steps)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
         next_state_batch = torch.from_numpy(np.array(next_state_reps)).to(device=self.device, dtype=torch.float32)
         global_state_batch = torch.from_numpy(
             np.concatenate([np.array(global_state_reps), np.array(hex_diffusion)], axis=1)).to(dtype=torch.float32,
@@ -210,15 +210,17 @@ class H_Agent:
         mask = self.get_action_mask(batch.next_state, batch.valid_action_num)  # action mask for next state
         all_q_[mask] = -9e10
         maxq = all_q_.max(1)[0].detach().unsqueeze(1)
-        print('Max Q={}, Max target Q={},Gamma={}'.format(torch.max(q_state_action), torch.max(maxq), self.gamma))
         pseudo_reward = np.sign(f_s) * (f_s - f_s_) + np.abs(f_s - f_median) * matched_flag
-        y = (1 - middle_terminal_flag) * (pseudo_reward + (1 - middle_next_terminal_flag) * maxq)
-        loss = F.smooth_l1_loss((1 - middle_terminal_flag) * q_state_action,y)
+        y = (1 - middle_terminal_flag) * (pseudo_reward + (1 - middle_next_terminal_flag) * maxq*torch.pow(self.gamma,time_step_batch))
+        loss = F.smooth_l1_loss(q_state_action,y)
+
+        print('Max Q={}, Max target Q={}, Loss = {}, Gamma={}'.format(torch.max(q_state_action), torch.max(maxq),loss, self.gamma))
+
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.option_network.parameters(), self.clipping_value)
         self.optimizer.step()
-        self.record_list.append([self.train_step, round(float(loss), 4)])
+        self.record_list.append([self.train_step, round(float(loss), 4), torch.max(maxq)])
         self.lr_scheduler.step()
         self.save_parameter(hist)
 
@@ -238,7 +240,7 @@ class H_Agent:
             torch.save(checkpoint, self.path + 'h_network_%d_%d_%d_%d.pkl' % (
             bool(self.with_option), bool(self.with_charging), bool(self.local_matching), self.train_step))
             for item in self.record_list:
-                record_hist.writelines('{},{}\n'.format(item[0], item[1]))
+                record_hist.writelines('{},{},{}\n'.format(item[0], item[1], item[2]))
             self.record_list = []
 
     def get_action_mask(self, batch_state, batch_valid_action):
