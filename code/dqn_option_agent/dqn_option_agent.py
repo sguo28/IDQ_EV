@@ -42,7 +42,7 @@ class DeepQNetworkOptionAgent:
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.learning_rate)
         self.lr_scheduler = StepLR(optimizer=self.optimizer,step_size=1000, gamma=0.99) # 1.79 e-6 at 0.5 million step.
         self.train_step = 0
-        self.load_network()
+        # self.load_network()
         self.q_network.to(self.device)
         self.target_q_network.to(self.device)
 
@@ -58,7 +58,7 @@ class DeepQNetworkOptionAgent:
         self.hex_diffusion = hex_diffusion
 
         self.h_network_list = []
-        self.load_option_networks(option_num)
+        self.load_option_networks(self.num_option)
         self.middle_terminal = self.init_terminal_states()
 
 
@@ -81,7 +81,7 @@ class DeepQNetworkOptionAgent:
     def load_option_networks(self,option_num):
         for option_net_id in range(option_num):
             h_network = OptionNetwork(self.input_dim,1+6+5)
-            checkpoint = torch.load(H_AGENT_SAVE_PATH + 'h_network_option%d_0_0_1_20160.pkl'%option_net_id)  # lets try the saved networks after the 14th day.
+            checkpoint = torch.load(H_AGENT_SAVE_PATH + 'ht_network_option_%d_1_0_1_11520.pkl'%(option_net_id))  # lets try the saved networks after the 14th day.
             h_network.load_state_dict(checkpoint['net'])  # , False
             self.h_network_list.append(h_network.to(self.device))
             print('Successfully load H network {}, total option network num is {}'.format(option_net_id,len(self.h_network_list)))
@@ -102,14 +102,14 @@ class DeepQNetworkOptionAgent:
                     middle_terminal[(oid,int(hr))].append(hid)
         return middle_terminal
 
-    def get_actions(self, states, num_valid_relos, global_state):
+    def get_actions(self, states, num_valid_relos, assigned_option_ids, global_state):
         """
         option_ids is at the first three slots in the action space, so action id <3 means the corresponding h_network id
         :param global_states:
         :param states: tuple of (tick, hex_id, SOC) and SOC is 0 - 100%
         :param num_valid_relos: only relocation to ADJACENT hexes / charging station is valid
         :states:
-        :return:
+        :return: action ids ranges from (0,14) , converted action ids has converted the option ids to hte action ids that are selected by corresponding option networks
         """
         with torch.no_grad():
             self.decayed_epsilon = max(self.final_epsilon, (self.start_epsilon - self.train_step * (
@@ -125,11 +125,15 @@ class DeepQNetworkOptionAgent:
                     dtype=torch.float32, device=self.device))
             mask = self.get_action_mask(states, num_valid_relos)  # mask for unreachable primitive actions
 
-            option_mask = self.get_option_mask(states) # if the state is considered as terminal, we dont use it..
+            option_mask = self.get_option_mask(states,assigned_option_ids) # if the state is considered as terminal, we dont use it..
             terminate_option_mask = torch.from_numpy(option_mask).to(dtype=torch.bool, device=self.device)
 
             if random.random() > self.decayed_epsilon:  # epsilon = 0.1
                 # print('take a look at processed mask {}'.format(mask))
+
+                for row_id, option_id in enumerate(assigned_option_ids):
+                    if option_id != -1:
+                        full_action_values[row_id, option_id] = 9e10
                 full_action_values[terminate_option_mask] = -9e10
                 full_action_values[mask] = -9e10
                 action_indexes = torch.argmax(full_action_values, dim=1).tolist()
@@ -138,8 +142,10 @@ class DeepQNetworkOptionAgent:
                 full_action_values = np.random.random(
                     (len(states), self.output_dim))  # generate a matrix with values from 0 to 1
                 for i, state in enumerate(states):
-                    full_action_values[i][:self.option_dim] = np.negative(option_mask[i,:self.option_dim]) # convert 1 to -1
-                    full_action_values[i][(self.option_dim+num_valid_relos[i]):(self.option_dim+self.relocation_dim)] = -1
+                    if assigned_option_ids[i] != -1:
+                        full_action_values[i][assigned_option_ids[i]] = 10 # a large enough number to maintain that option if it's terminal state, we next mask it with -1.
+                    full_action_values[i][:self.option_dim] = np.negative(option_mask[i,:self.option_dim]) # convert terminal agents to -1
+                    full_action_values[i][(self.option_dim+num_valid_relos[i]):(self.option_dim+self.relocation_dim)] = -1 # mask unreachable neighbors.
                     if state[-1] > HIGH_SOC_THRESHOLD:
                         full_action_values[i][(self.option_dim+self.relocation_dim):] = -1  # no charging, must relocate
                     elif state[-1] < LOW_SOC_THRESHOLD:
@@ -147,8 +153,8 @@ class DeepQNetworkOptionAgent:
                 action_indexes = np.argmax(full_action_values, 1).tolist()
             # after getting all action ids by DQN, we convert the ones triggered options to the primitive action ids.
             converted_action_indexes = self.convert_option_to_primitive_action_id(action_indexes,state_reps,global_state,hex_diffusions,mask)
-
-        return action_indexes, converted_action_indexes
+        # if mask the assigned option at last, the terminal state will not be counted.
+        return np.array(action_indexes), np.array(converted_action_indexes)-self.option_dim
 
     def convert_option_to_primitive_action_id(self,action_indexes,state_reps,global_state,hex_diffusions,mask):
         """
@@ -160,22 +166,23 @@ class DeepQNetworkOptionAgent:
         :param mask:
         :return:
         """
-        ids_require_option = defaultdict(list)
+        ids_require_option= defaultdict(list)
         for id, action_id in enumerate(action_indexes):
-            if action_id < self.option_dim:
+            if action_id < self.num_option:
                 ids_require_option[action_id].append(id)
-        for action_id in range(self.option_dim):
-            if ids_require_option[action_id]:
-                full_option_values = self.h_network_list[action_id].forward(
-                    torch.from_numpy(state_reps[ids_require_option[action_id]]).to(dtype=torch.float32, device=self.device),
+        for option_id in range(self.num_option):
+            if ids_require_option[option_id]:
+                full_option_values = self.h_network_list[option_id].forward(
+                    torch.from_numpy(state_reps[ids_require_option[option_id]]).to(dtype=torch.float32, device=self.device),
                     torch.from_numpy(np.concatenate(
-                        [np.tile(global_state, (len(ids_require_option[action_id]), 1, 1, 1)), hex_diffusions[ids_require_option[action_id]]],
+                        [np.tile(global_state, (len(ids_require_option[option_id]), 1, 1, 1)), hex_diffusions[ids_require_option[option_id]]],
                         axis=1)).to(dtype=torch.float32, device=self.device))
-                primitive_action_mask = mask[ids_require_option[action_id],self.option_dim:]  # only primitive actions in option generator
+                # here mask is of batch x 15 dimension, we omit the first 3 columns, which should be options.
+                primitive_action_mask = mask[ids_require_option[option_id],self.option_dim:]  # only primitive actions in option generator
                 full_option_values[primitive_action_mask] = -9e10
-                premitive_action_id = torch.argmax(full_option_values, dim=1).tolist()
-                action_indexes[ids_require_option[
-                    action_id]] = premitive_action_id  # cover the option id with the generated primitive action id
+                option_generated_premitive_action_ids = torch.argmax(full_option_values, dim=1).tolist()  # let option network select primitive action
+                action_indexes[ids_require_option[option_id]] = option_generated_premitive_action_ids+self.option_dim # 12 to 15
+                # cover the option id with the generated primitive action id
         return action_indexes
 
     def add_global_state_dict(self, global_state_list):
@@ -329,7 +336,7 @@ class DeepQNetworkOptionAgent:
             if not os.path.isdir(self.path):
                 os.mkdir(self.path)
             # print('the path is {}'.format('logs/dqn_model/duel_dqn_%s.pkl'%(str(self.train_step))))
-            torch.save(checkpoint, 'logs/test/cnn_dqn_model/dqn_with_option_%d_%d_%d_%s.pkl' % (bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
+            torch.save(checkpoint, 'logs/test/cnn_dqn_model/dqn_with_option_%d_%d_%d_%d_%s.pkl' % (self.num_option,bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
             # record training process (stacked before)
             for item in self.record_list:
                 record_hist.writelines('{},{},{}\n'.format(item[0], item[1], item[2]))

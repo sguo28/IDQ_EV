@@ -326,7 +326,7 @@ class DeepQNetworkOptionAgent:
             if not os.path.isdir(self.path):
                 os.mkdir(self.path)
             # print('the path is {}'.format('logs/dqn_model/duel_dqn_%s.pkl'%(str(self.train_step))))
-            torch.save(checkpoint, 'logs/test/cnn_dqn_model/dqn_with_option%d_%d_%d_%d_%s.pkl' % (self.num_option,bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
+            torch.save(checkpoint, 'logs/test/cnn_dqn_model/dqn_with_option_%d_%d_%d_%d_%s.pkl' % (self.num_option,bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
             # record training process (stacked before)
             for item in self.record_list:
                 record_hist.writelines('{},{},{}\n'.format(item[0], item[1], item[2]))
