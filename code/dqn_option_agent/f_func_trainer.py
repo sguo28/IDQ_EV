@@ -7,9 +7,11 @@ import geopandas as gpd
 from f_approx_network import F_Network
 import torch
 
+NUM_OPTIONS = 1
+
 def load_data():
     od_by_hour = defaultdict(list)
-    with open('../logs/vehicle_track/od_trajs.csv', 'r') as f:
+    with open('../logs/vehicle_track/od_trajs_%d.csv'%NUM_OPTIONS, 'r') as f:
         next(f)
         for lines in f:
             line = lines.strip().split(',')
@@ -42,7 +44,7 @@ def load_f_func_approx_by_hour(hex_diffusion):
     for hr in range(24):
         f_dict[hr] = (f_func_approx_list[hr].forward(
             torch.from_numpy(np.array(hex_diffusion)).to(dtype=torch.float32,device=device))).cpu().detach().numpy()
-    with open('../logs/hex_p_value.csv', 'w') as p_file:
+    with open('../logs/hex_p_value_%d.csv'%NUM_OPTIONS, 'w') as p_file:
         for hr in range(24):
             for hex_id, p_value in enumerate(f_dict[hr]):
                 p_file.writelines('{},{},{}\n'.format(hr, hex_id, p_value[0]))
@@ -60,7 +62,7 @@ if __name__ == '__main__':
 
     [f_approx.add_od_pair(training_set[hr]) for hr, f_approx in f_func_agents.items()]
     for episode in range(10):  # we train 10 episode
-        with open('../logs/f_func_training_hist.csv', 'w') as f:
+        with open('../logs/f_func_training_hist_%d.csv'%NUM_OPTIONS, 'w') as f:
             [f_approx.train_f_function(hr,f) for hr, f_approx in f_func_agents.items()]
             print('Finish episode {}'.format(episode))
     load_f_func_approx_by_hour(hex_diffusions)

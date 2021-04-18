@@ -2,7 +2,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from config.setting import SAVING_CYCLE, EPSILON_DECAY_STEPS, F_AGENT_SAVE_PATH, TRAJECTORY_BATCH_SIZE
-from f_approx_network import F_Network
+from dqn_option_agent.f_approx_network import F_Network
 import random
 
 
@@ -10,7 +10,8 @@ class F_Agent:
     """
     F agent is to train the approximator of second eigenvector by hour.
     """
-    def __init__(self,hex_diffusion,  isoption=False,islocal=True,ischarging=True):
+    def __init__(self,hex_diffusion,num_options,  isoption=False,islocal=True,ischarging=True):
+        self.num_options = num_options
         self.learning_rate = 1e-4 # 5e-4
         self.epsilon_f_steps = EPSILON_DECAY_STEPS
         # self.traj_memory = TrajReplayMemory(TRAJECTORY_BUFFER_SIZE) # [TrajReplayMemory(REPLAY_BUFFER_SIZE) for _ in range(24)] # 24 hours
@@ -49,7 +50,7 @@ class F_Agent:
     def add_od_pair(self,od_pairs):
         self.training_data = od_pairs
 
-    def train_f_function(self,hr,hist_file):
+    def train_f_function(self,hr,hist_file,episode):
         random.shuffle(self.training_data)
         batch_size = 128
         for i in range(0,len(self.training_data),batch_size):  # 128 is batch size
@@ -64,22 +65,36 @@ class F_Agent:
             loss = (0.5 *(f_values_ - f_values).pow(2) + eta*((f_values_ - delta)*(f_values-delta) + f_values_.pow(2)*f_values.pow(2))).mean()  # + (f_values-f_values_).mean())
             self.f_optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.f_network.parameters(), 1)
+            # torch.nn.utils.clip_grad_norm_(self.f_network.parameters(), 1)
             self.f_optimizer.step()
             self.record_list.append([self.f_train_step, round(float(loss), 4)])
-            self.save_parameter(hr,hist_file)
+            if episode > 3:
+                self.save_parameter(hr,hist_file,episode)
             if hr == 0:
                 print("Step:{}, Loss:{}, Training data size: {}".format(self.f_train_step,loss,len(self.training_data)))
 
-    def save_parameter(self, hr, hist_file):
+    def save_parameter(self, hr, hist_file,episode):
         # torch.save(self.q_network.state_dict(), self.dqn_path)
-        if self.f_train_step % SAVING_CYCLE == 0:
-            checkpoint = {
-                "net": self.f_network.state_dict()
-            }
-            print('f_approx is saving at {}'.format('../'+self.path+'f_network_%d.pkl' % (hr)))
-            torch.save(checkpoint, '../'+self.path+'f_network_%d.pkl' % (hr))
-            # (bool(self.with_option),bool(self.with_charging),bool(self.local_matching)))
-        for item in self.record_list:
-            hist_file.writelines('{},{},{}\n'.format(item[0], hr, item[1]))
-        self.record_list = []
+        if hr == 0:
+            if self.f_train_step % 500 == 0:  # too large cycle will not let hr=0 save values.
+                checkpoint = {
+                    "net": self.f_network.state_dict()
+                }
+                print('f_approx is saving at {}'.format(
+                    self.path + 'f_network_o%d_h%d_e%d.pkl' % (self.num_options, hr, episode)))
+                torch.save(checkpoint, self.path + 'f_network_o%d_h%d_e%d.pkl' % (self.num_options, hr, episode))
+                # (bool(self.with_option),bool(self.with_charging),bool(self.local_matching)))
+            for item in self.record_list:
+                hist_file.writelines('{},{},{}\n'.format(item[0], hr, item[1]))
+            self.record_list = []
+        else:
+            if self.f_train_step % 1440 == 0:
+                checkpoint = {
+                    "net": self.f_network.state_dict()
+                }
+                print('f_approx is saving at {}'.format(self.path+'f_network_o%d_h%d_e%d.pkl' % (self.num_options,hr,episode)))
+                torch.save(checkpoint, self.path+'f_network_o%d_h%d_e%d.pkl' % (self.num_options,hr,episode))
+                # (bool(self.with_option),bool(self.with_charging),bool(self.local_matching)))
+            for item in self.record_list:
+                hist_file.writelines('{},{},{}\n'.format(item[0], hr, item[1]))
+            self.record_list = []

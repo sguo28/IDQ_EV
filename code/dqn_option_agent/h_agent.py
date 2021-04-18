@@ -1,5 +1,3 @@
-from typing import Any
-
 from config.setting import LEARNING_RATE, GAMMA, REPLAY_BUFFER_SIZE, BATCH_SIZE, RELOCATION_DIM, \
     INPUT_DIM, FINAL_EPSILON, HIGH_SOC_THRESHOLD, LOW_SOC_THRESHOLD, CLIPPING_VALUE, START_EPSILON, \
     EPSILON_DECAY_STEPS, H_AGENT_SAVE_PATH, SAVING_CYCLE, H_AGENT_REPLAY_BUFFER_SIZE, NUM_REACHABLE_HEX, \
@@ -19,18 +17,19 @@ from torch.optim.lr_scheduler import StepLR
 
 class H_Agent:
 
-    def __init__(self, hex_diffusion, xy_coords, isoption=False, islocal=True, ischarging=True):
-        self.learning_rate = 1e-4
+    def __init__(self, hex_diffusion, xy_coords, num_option, isoption=True, islocal=True, ischarging=False):
+        self.num_option =int(num_option)
+        self.learning_rate = 2e-3
         self.gamma = GAMMA
         self.start_epsilon = START_EPSILON
         self.final_epsilon = FINAL_EPSILON
         self.epsilon_steps = EPSILON_DECAY_STEPS
         self.memory = OptionReplayMemory(H_AGENT_REPLAY_BUFFER_SIZE)  # 1e4
-        self.batch_size = BATCH_SIZE
+        self.batch_size = 256
         self.clipping_value = CLIPPING_VALUE
         self.input_dim = INPUT_DIM
         self.relocation_dim = RELOCATION_DIM
-        self.option_dim = 0  # put 0 first, change it later. OPTION_DIM  # type: int
+        self.option_dim = 3  # put 0 first, change it later. OPTION_DIM  # type: int
         self.premitive_action_dim = 1 + 6 + 5
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -52,7 +51,7 @@ class H_Agent:
         self.record_list = []
         self.global_state_dict = OrderedDict()
         self.time_interval = int(0)
-        self.global_state_capacity = 5 * 1440  # we store 5 days' global states to fit replay buffer size.
+        self.global_state_capacity = 10 * 1440  # we store 5 days' global states to fit replay buffer size.
         self.with_option = isoption
         self.with_charging = ischarging
         self.local_matching = islocal
@@ -68,7 +67,7 @@ class H_Agent:
     def init_f_values_and_terminate_state(self):
 
         all_f_by_hour = np.zeros((24, NUM_REACHABLE_HEX))
-        with open('logs/hex_p_value.csv', 'r') as f:
+        with open('logs/hex_p_value_%d.csv'%(self.num_option), 'r') as f:
             next(f)
             for lines in f:
                 line = lines.strip().split(',')
@@ -90,7 +89,7 @@ class H_Agent:
             middle_mask[hr] = [np.sign(f_value - f_threshold_dict[hr][0]) * np.sign(f_threshold_dict[hr][1] - f_value)
                                for f_value in self.all_f_values[hr]]
         self.middle_mask = middle_mask  # 24 by 1347
-        with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%(0),'w') as ts:
+        with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%(self.num_option),'w') as ts:
             for hr in range(24):
                 for hex_id,term_flag in enumerate(middle_mask[hr]):
                     if term_flag == 1:
@@ -176,7 +175,7 @@ class H_Agent:
 
         state_batch = torch.from_numpy(np.array(state_reps)).to(dtype=torch.float32, device=self.device)
 
-        action_batch = torch.from_numpy(np.array(batch.action)).unsqueeze(1).to(dtype=torch.int64, device=self.device)
+        action_batch = torch.from_numpy(np.array(batch.action)).unsqueeze(1).to(dtype=torch.int64, device=self.device) - self.option_dim
 
         time_step_batch = torch.from_numpy(np.array(batch.time_steps)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
         next_state_batch = torch.from_numpy(np.array(next_state_reps)).to(device=self.device, dtype=torch.float32)
@@ -234,10 +233,10 @@ class H_Agent:
             }
             if not os.path.isdir(self.path):
                 os.mkdir(self.path)
-            print('h_agent is saving at {}'.format(self.path + 'h_network_%d_%d_%d_%d.pkl' % (
+            print('h_agent is saving at {}'.format(self.path + 'ht_network_option_%d_%d_%d_%d_%d.pkl' % (self.num_option,
             bool(self.with_option), bool(self.with_charging), bool(self.local_matching), self.train_step)))
 
-            torch.save(checkpoint, self.path + 'h_network_%d_%d_%d_%d.pkl' % (
+            torch.save(checkpoint, self.path + 'ht_network_option_%d_%d_%d_%d_%d.pkl' % (self.num_option,
             bool(self.with_option), bool(self.with_charging), bool(self.local_matching), self.train_step))
             for item in self.record_list:
                 record_hist.writelines('{},{},{}\n'.format(item[0], item[1], item[2]))
