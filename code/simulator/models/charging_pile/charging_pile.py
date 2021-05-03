@@ -1,7 +1,7 @@
 from numpy.core.fromnumeric import mean
 from novelties import status_codes
 from collections import deque
-from config.setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD, PER_TICK_DISCOUNT_FACTOR
+from config.hex_setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD, PER_TICK_DISCOUNT_FACTOR
 
 
 class chargingpile:
@@ -71,7 +71,7 @@ class chargingpile:
 
 
 class charging_station:
-    def __init__(self, n_l2=1, n_dcfast=1, lat=None, lon=None, hex_id=None, hex=None, xy_coord=None):
+    def __init__(self, n_l2=1, n_dcfast=1, lat=None, lon=None, hex_id=None, hex=None, row_col_coord=None):
         self.location = float(lon), float(lat)
         # initial the charging piles for the charging station
         self.piles = [chargingpile(type=status_codes.SP_LEVEL2, location=self.location, hex_id=hex_id, hex=hex) for _ in
@@ -86,7 +86,7 @@ class charging_station:
         self.time_to_cs = []
         self.hex_id = hex_id
         self.hex = hex
-        self.x_coord, self.y_coord = xy_coord
+        self.row_id, self.col_id = row_col_coord
         self.num_l2_pile = n_l2
         self.num_dcfc_pile = n_dcfast
 

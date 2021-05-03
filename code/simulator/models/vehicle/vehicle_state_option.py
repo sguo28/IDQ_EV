@@ -1,6 +1,6 @@
 from novelties import status_codes
 from novelties import vehicle_types
-from config.hex_setting import TARGET_SOC, TARGET_SOC_STD
+from config.setting import TARGET_SOC, TARGET_SOC_STD
 import numpy as np
 
 

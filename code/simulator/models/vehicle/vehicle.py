@@ -3,9 +3,10 @@ from .vehicle_state import VehicleState
 from .vehicle_behavior import Occupied, Cruising, Idle, Assigned, OffDuty, Waytocharge, Waitpile, Charging, \
     Tobedispatched, Stay, Tobecruised
 from logging import getLogger
+from collections import deque
 import numpy as np
-from config.setting import SOC_PENALTY, MILE_PER_METER, SIM_ACCELERATOR, BETA_CHARGE_COST, BETA_EARNING, BETA_DIST, \
-    BETA_TIME, IDLE_DURATION, QUICK_END_CHARGE_PENALTY, BETA_RANGE_ANXIETY, PER_TICK_DISCOUNT_FACTOR
+from config.hex_setting import SOC_PENALTY, MILE_PER_METER, SIM_ACCELERATOR, BETA_CHARGE_COST, BETA_EARNING, BETA_DIST, \
+    BETA_TIME, IDLE_DURATION, QUICK_END_CHARGE_PENALTY, BETA_RANGE_ANXIETY, PER_TICK_DISCOUNT_FACTOR, OPTION_DIM
 
 
 # from simulator.services.osrm_engine import OSRMEngine
@@ -32,20 +33,8 @@ class Vehicle(object):
         self.__customers = []  # A vehicle can have a list of cusotmers
         self.__customers_ids = []
         self.__charging_station = []
-        self.total_earnings = 0
-        self.working_time = 0
-        # self.first_dispatched = 0
-        # self.pickup_time = 0
-        self.q_action_dict = {}
-        # self.duration = [[0] for _ in len(self.behavior_models)]     # Duration for each state
-        self.charging_wait = 0
-        self.start_state = None
-        self.end_state = None  # [0, self.state.hex_id, self.state.SOC]
-        self.action = 0
         self.reward = 0
-        self.recent_transitions = []  # deque(maxlen=10)
-        self.f_func_transition = []
-        self.option_transition = []
+        self.cum_reward=0
         self.flag = 0
         self.time_ticks = [0]
         self.start_tick = tick
@@ -68,6 +57,24 @@ class Vehicle(object):
         self.discount_factor = PER_TICK_DISCOUNT_FACTOR  # 0.99
         self.decay_lambda = 1.0
         self.charging_dicounted_reward = 0
+        self.assigned_option = -1 #no option assigned at the beginning
+        self.option_contd=0 #1 if continuing from previous option, 1 otherwise
+        self.recent_transitions = []  # deque(maxlen=10), store options
+        self.prime_transition=[] #store primitive action pairs
+        self.f_transition=[] #store transitions for calculating f
+        self.total_earnings = 0
+        self.working_time = 0
+        self.idle_time=0
+        self.idle_dist=0
+        # self.first_dispatched = 0
+        # self.pickup_time = 0
+        self.q_action_dict = {}
+        # self.duration = [[0] for _ in len(self.behavior_models)]     # Duration for each state
+        self.charging_wait = 0
+        self.start_state = None
+        self.end_state = None  # [0, self.state.hex_id, self.state.SOC]
+        self.action = 0 #this is the action to be executed
+        self.assigned_action=0 #this can be the same as assigned policy, or different
 
         # update the information of vehicles, e.g. change the current hex zone location, this is not paralleled
     def update_info(self, hex_zones, routes, hex_coords_list, tick):
@@ -106,7 +113,7 @@ class Vehicle(object):
         self.charging_od_pairs = []
         self.repositioning_od_pairs = []
 
-    def step(self, timestep, timetick):
+    def step(self, timestep, timetick,terminal_states):
         """
         step function for vehicle
         :param timetick:
@@ -118,7 +125,7 @@ class Vehicle(object):
             self.state.need_interpolate = False
 
         try:
-            self.__behavior.step(self, timetick)
+            self.__behavior.step(self, timetick,terminal_states)
         except:
             print('Unable to perform behavior step!')
             logger = getLogger(__name__)
@@ -135,17 +142,22 @@ class Vehicle(object):
             exported_trans = self.recent_transitions[:-1]
             self.recent_transitions = [self.recent_transitions[-1]]
         return exported_trans
-    def dump_f_transitions(self):
+
+    def dump_prime_transitions(self):
+        #store all the prime transitions from the vehicle
         exported_trans = []
-        if len(self.f_func_transition) > 1:
-            exported_trans = self.f_func_transition[:-1]
-            self.f_func_transition = [self.f_func_transition[-1]]
+        if len(self.prime_transition) > 1:
+            exported_trans = self.prime_transition[:-1]
+            self.prime_transition=[self.prime_transition[-1]]
         return exported_trans
-    def dump_option_transitions(self):
+
+
+    def dump_f_transitions(self):
+        #store all the prime transitions from the vehicle
         exported_trans = []
-        if len(self.option_transition) > 1:
-            exported_trans = self.option_transition[:-1]
-            self.option_transition = [self.option_transition[-1]]
+        if len(self.f_transition) > 1:
+            exported_trans = self.f_transition[:-1]
+            self.f_transition=[self.f_transition[-1]]
         return exported_trans
 
     def get_mile_of_range(self):
@@ -157,9 +169,11 @@ class Vehicle(object):
     def get_target_SOC(self):
         return self.state.target_SOC
 
-    def send_to_dispatching_pool(self, action_id, converted_action_id):
-        self.state.dispatch_action_id = action_id
-        self.state.converted_action_id = converted_action_id
+    def send_to_dispatching_pool(self, action_select,action_execute,opts=-1,ctd_opt=0):
+        self.state.dispatch_action_id = action_execute
+        self.assigned_action=action_select
+        self.assigned_option=opts
+        self.option_contd=ctd_opt
         self.__change_to_tobedispatched()
 
     def location_interp(self, t_unit=60):
@@ -174,37 +188,41 @@ class Vehicle(object):
         # case 1. Relocation to different locations
         if isinstance(self.state.time_to_destination, list):
             if self.state.time_to_destination[0]>0: #valid trajectories
-                total_tt = sum(self.state.time_to_destination)
-                cum_time = np.cumsum(self.state.time_to_destination)
-                cum_dist = np.cumsum(self.state.travel_dist)
-                time_ticks = [i * t_unit for i in
-                              range(1, int(total_tt // t_unit + 1))]  # the time steps to query from per simulation tick
-                self.time_ticks = [t_unit for _ in range(len(time_ticks))]
-                if total_tt % t_unit > 0:
-                    time_ticks.append(total_tt)  # add the final step
-                    self.time_ticks.append(total_tt % t_unit)
+                #this is for parsed trajectories
+                self.state.per_tick_coords=list(self.state.route)
+                self.state.per_tick_dist=list(self.state.travel_dist)
+                self.time_ticks=list(self.state.time_to_destination)
+                # total_tt = sum(self.state.time_to_destination)
+                # cum_time = np.cumsum(self.state.time_to_destination)
+                # cum_dist = np.cumsum(self.state.travel_dist)
+                # time_ticks = [i * t_unit for i in
+                #               range(1, int(total_tt // t_unit + 1))]  # the time steps to query from per simulation tick
+                # self.time_ticks = [t_unit for _ in range(len(time_ticks))]
+                # if total_tt % t_unit > 0:
+                #     time_ticks.append(total_tt)  # add the final step
+                #     self.time_ticks.append(total_tt % t_unit)
+                #
+                # per_tick_dist = np.interp(time_ticks, cum_time, cum_dist)
+                # # if len(per_tick_dist)>=0:
+                # try:
+                #     per_tick_dist = [per_tick_dist[0]] + np.diff(per_tick_dist).tolist()
+                # except IndexError:
+                #     print('tick dist:', self.state.travel_dist)
+                #     print('tick time:', self.state.time_to_destination)
+                #
+                # lons = [self.state.route[0][0][0]] + [coord[1][0] for coord in self.state.route]
+                # lats = [self.state.route[0][0][1]] + [coord[1][1] for coord in self.state.route]
+                #
+                # cum_time = cum_time.tolist()
+                # per_tick_lon = np.interp(time_ticks, [0] + cum_time, lons)
+                # per_tick_lat = np.interp(time_ticks, [0] + cum_time, lats)
+                # per_tick_lon = per_tick_lon.tolist()
+                # per_tick_lat = per_tick_lat.tolist()
+                #
+                # per_tick_coords = [[lon, lat] for lon, lat in zip(per_tick_lon, per_tick_lat)]
 
-                per_tick_dist = np.interp(time_ticks, cum_time, cum_dist)
-                # if len(per_tick_dist)>=0:
-                try:
-                    per_tick_dist = [per_tick_dist[0]] + np.diff(per_tick_dist).tolist()
-                except IndexError:
-                    print('tick dist:', self.state.travel_dist)
-                    print('tick time:', self.state.time_to_destination)
-
-                lons = [self.state.route[0][0][0]] + [coord[1][0] for coord in self.state.route]
-                lats = [self.state.route[0][0][1]] + [coord[1][1] for coord in self.state.route]
-
-                cum_time = cum_time.tolist()
-                per_tick_lon = np.interp(time_ticks, [0] + cum_time, lons)
-                per_tick_lat = np.interp(time_ticks, [0] + cum_time, lats)
-                per_tick_lon = per_tick_lon.tolist()
-                per_tick_lat = per_tick_lat.tolist()
-
-                per_tick_coords = [[lon, lat] for lon, lat in zip(per_tick_lon, per_tick_lat)]
-
-                self.state.per_tick_coords = per_tick_coords
-                self.state.per_tick_dist = per_tick_dist
+                # self.state.per_tick_coords = per_tick_coords
+                # self.state.per_tick_dist = per_tick_dist
 
             # empty routes (not feasible)
             else:
@@ -213,12 +231,16 @@ class Vehicle(object):
                 todo: make the K value a predefined parameter from the config file
                 '''
                 # print('Vehicle status for generating routes:',self.state.status,self.state.hex_id,self.state.destination_hex)
-                if self.state.status<=1:
+                if self.state.status<=1 or self.state.status==9:  #9 is the stay
                     K = IDLE_DURATION
                 else:
                     K=1 #no wait , for charging, dispatching, assigned status
                 self.time_ticks = [t_unit for _ in range(K)]
-                self.state.per_tick_dist = [0 for _ in range(K)]
+                # print('The vehicle is in stay state, the status code is {}, the time to destination is {}'.format(
+                #     self.state.status, self.time_ticks))
+                # print('Trip origin is {}, Tri destination is, the route is {}'.format(
+                #     self.state.hex_id, self.state.destination_hex,self.state.route))
+                self.state.per_tick_dist = [300 for _ in range(K)] #500 is the cruising distance per minutes
                 self.state.per_tick_coords = [[self.state.route[0][0][0], self.state.route[0][0][1]] for _ in range(K)]
         #
         # # case 2: stay or NO ROUTE IS AVAILABLE !
@@ -235,66 +257,156 @@ class Vehicle(object):
         assert len(self.state.per_tick_coords) == len(self.state.per_tick_dist)
         assert len(self.state.per_tick_dist) == len(self.time_ticks)
 
-    def cruise(self, target_hex_coord, action_id, tick,stay_flag):
+    def cruise(self, target_hex_coord, action, tick):
         '''
         :param target_hex_coord:
         :param tick: used by park to store states.
         '''
         assert self.__behavior.available
+        self.prime_start_tick = tick
+        self.prime_start_state = [self.prime_start_tick, self.state.hex_id, self.state.SOC]
+
 
         # only dump after one full transition is finished (and the new reward for matching is attached)
         # SOC follows exponential function:
-        self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
-        self.decay_lambda = 1.0
-        self.start_tick = tick
-        self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
-        self.action = action_id
+        if self.assigned_option==-1: #no option assigned
+            self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
+            self.cum_reward+=self.reward
+            self.decay_lambda = 1.0
+            self.start_tick = tick
+            self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
+            self.f_start_state = [tick, self.state.hex_id]
+        else:
+            if self.option_contd == 0: #option assigned but started a new option
+                self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(
+                    self.state.SOC) if self.state.SOC <= 0.4 else 0
+                self.cum_reward+=self.reward
+                self.decay_lambda = 1.0
+                self.start_tick = tick
+                self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
+                self.f_start_state = [tick, self.state.hex_id]
+            else: #option assigned, and continue flag is active
+                self.reward += - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
+                self.cum_reward+=self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
+
+
+        self.action = action
+
+        self.opt_start_state = [tick, self.state.hex_id, self.state.SOC]
+        self.opt_reward = self.reward  # record current reward
+        self.opt_start_tick = tick
+
         self.__set_destination(target_hex_coord)
-        if stay_flag:
+        if action == 0:
             self.__change_to_stay()
         else:
             self.__change_to_cruising()
 
-    def park(self, tick):
+    def park(self, tick,terminate_states):
         ''':param
         '''
         self.start_serve_tick = tick  # start serve tick is for full service cycle if being matched next
         self.end_tick = tick
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
+        self.f_end_state=[tick, self.state.hex_id]
+        trip_flag=False
+        if self.prime_start_state is not None:
+            self.prime_transition.append([self.prime_start_state,self.action,self.end_state,trip_flag, (self.end_tick - self.prime_start_tick)//60+1])
+        else:
+            print('Start state is None and I can not pop in new rewards')
+
+        if (tick+60)//60%1440==0:
+            terminate=True
+        else:
+            terminate=False
+
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda*SOC_PENALTY
-        terminate=False
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,terminate, (self.end_tick - self.start_tick)//60])
+            self.cum_reward-=SOC_PENALTY
+        if self.assigned_option==-1: #no assigned policy
+            self.f_transition.append([self.f_start_state, self.f_end_state])
+            steps = (self.end_tick - self.start_tick) // 60 + 1
+            rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
+            self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward*rate,terminate, (self.end_tick - self.start_tick)//60+1])
+            # print('Line 331 End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format(
+            #     (self.action,self.state.dispatch_action_id),self.assigned_action, self.assigned_action, self.assigned_option))
+
+        else:
+            #need to check if the vehicle is at the terminal state
+            if self.state.hex_id in terminate_states[(self.assigned_option,tick//(60*60)%24)]: #arrived at the terminal state, we need to dump transitions
+                self.f_transition.append([self.opt_start_state,self.f_end_state])
+                self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward, terminate,
+                                                (self.end_tick - self.start_tick) // 60+1])
+                if self.assigned_action<0:
+                    print('error line 341')
+                    basdasdasdsad
+                # print('Line 341 End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),self.assigned_action, self.assigned_action,self.assigned_option))
+
+                #also dump the transitions following options
+                temp_reward=self.reward-self.opt_reward
+                action=self.action+OPTION_DIM #
+                steps = (self.end_tick - self.opt_start_tick) // 60 + 1
+                rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
+
+                self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
+                                                (self.end_tick - self.opt_start_tick) // 60+1])
+                if action<0:
+                    print('error line 354')
+                    basdasdasdsad
+                # print('Line 351 Intermediate recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),action, self.assigned_action,self.assigned_option))
+                self.f_transition.append([self.opt_start_state, self.f_end_state])
+                self.assigned_option=-1
+                self.option_contd=0
+            else:
+                #record the primitive transition followed by the options
+                temp_reward=self.reward-self.opt_reward
+                action=self.action+OPTION_DIM #
+                if action<0:
+                    print('error line 365')
+                    basdasdasdsad
+                steps = (self.end_tick - self.opt_start_tick) // 60 + 1
+                rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
+                self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
+                                                (self.end_tick - self.opt_start_tick) // 60+1])
+                # print('Line 361 Intermediate recording, current aciton is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id), action, self.assigned_action,self.assigned_option))
+
+                self.f_transition.append([self.opt_start_state, self.f_end_state])
+
         self.__reset_plan()
         self.__change_to_idle()
 
-    def head_for_customer(self, destination, customer_hex_location):
+    def head_for_customer(self, destination, customer_hex_location,tick):
         '''
         :destination: lon, lat
         '''
         assert self.__behavior.available
+        # if self.state.status==0: #idle state, set prime start condition
+        #     self.prime_start_tick = tick
+        #     self.prime_start_state = [self.prime_start_tick, self.state.hex_id, self.state.SOC]
+
         self.__set_destination(destination)
         self.state.origin_hex=self.state.hex_id
         self.state.destination_hex=customer_hex_location
         self.state.need_route=True
         self.state.assigned_customer_id = customer_hex_location
         self.__customers_ids.append(customer_hex_location)
+        if self.state.status!= status_codes.V_CRUISING :
+            if self.assigned_option==-1:
+                self.f_start_state=[tick,self.state.hex_id] #if not cruising ,meaning idle or stay, start a new transition for f
+        self.option_contd=0
+        #get matched to a passenger, dump the transition
+
         self.__change_to_assigned()
 
     def dump_last(self,tick): #store the transaction and retrive terminal flag
         #dump all remaining transactions to DQN
-        if self.recent_transitions:
-            self.end_tick = tick
-            self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
-            # update the reward
-            terminate = True
-            if self.start_tick==self.recent_transitions[-1][0][0]: # start tick in the REPLAY BUFFER
-                self.recent_transitions[-1] = [self.start_state, self.action, self.end_state, self.reward,
-                                                   terminate, (self.end_tick - self.start_tick) // 60]
-            else: #not match
-                self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,
-                                                   terminate, (self.end_tick - self.start_tick) // 60])
-                # elif self.start_state is not None :
+        self.end_tick = tick
+        self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
+        # update the reward
+        terminate=True
+        self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward,
+                                                   terminate, (self.end_tick - self.start_tick) // 60+1])
+                # elif self.start_state is not None:
                 #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
         exported_trans = self.recent_transitions
         return exported_trans
@@ -348,24 +460,67 @@ class Vehicle(object):
         customer = self.__customers.pop(0)
         customer.get_off()
         # total_trip_dist, total_drip_duration, customer's waiting time
-        customer_payment = customer.make_payment((self.pickup_distance + self.dropoff_distance),
-                                                 (self.pickup_duration + self.dropoff_duration), self.pickup_duration)
+        customer_payment = customer.make_payment(self.dropoff_distance,
+                                                 self.dropoff_duration, self.pickup_duration)
         self.end_tick = tick
-        self.reset_dist_and_time_per_trip()
+
+
+        trip_flag=True
+        if self.prime_start_state is not None:
+            self.prime_transition.append([self.prime_start_state,self.action,[tick,self.state.hex_id,self.state.SOC],trip_flag, (tick - self.prime_start_tick)//60+1])
+        else:
+            print('Start state is None and I can not pop in new rewards')
+
+        # self.f_end_state=[tick,self.state.hex_id]
+        # self.f_transition.append([self.f_start_state,self.f_end_state])
+
+
+
         self.total_earnings += customer_payment
-        self.reward += self.decay_lambda * BETA_EARNING * customer_payment
+        #distribute the payment over different time steps
+        # self.reward += self.decay_lambda*BETA_EARNING * customer_payment
+        self.reward += BETA_EARNING * customer_payment
+        self.cum_reward+= BETA_EARNING * customer_payment
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
+        trip_flag=True
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda * SOC_PENALTY
+            self.cum_reward-=SOC_PENALTY
         # update the reward
-        terminate_flag=False
-        if self.recent_transitions:
+        if (tick + 60) // 60 % 1440 == 0:
+            terminate = True
+        else:
+            terminate = False
             #     # update the reward, add previous SOC penalty back to avoid double count on mileage anxiety.
             #     last_step_SOC = self.recent_transitions[-1][0][-1]
-            self.recent_transitions[-1] =[self.start_state, self.action, self.end_state, self.reward, terminate_flag,(self.end_tick - self.start_tick)//60]
+
+        steps=(self.end_tick - self.start_tick)//60+1
+        rate=(self.discount_factor**steps-1)/(steps*(self.discount_factor-1))
+        self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward*rate, terminate,(self.end_tick - self.start_tick)//60+1])
+        if self.assigned_action < 0:
+            print('error line 501')
+            basdasdasdsad
+        # print('Line 492 Trip End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),
+        #     self.assigned_action, self.assigned_action, self.assigned_option))
+
+        if self.assigned_action!=self.action+OPTION_DIM:
+            temp_reward = self.reward - self.opt_reward
+            steps = (self.end_tick - self.opt_start_tick) // 60 + 1
+            rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1)) #discounted rate
+            action = self.action + OPTION_DIM  #
+            if action < 0:
+                print('error line 513')
+                basdasdasdsad
+            self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
+                                            (self.end_tick - self.opt_start_tick) // 60 + 1])
+            # print('Line 502 Trip Intermediate option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),
+            #     action, self.assigned_action, self.assigned_option))
+
         # elif self.start_state is not None:
         #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
-
+        self.reset_dist_and_time_per_trip()
+        self.assigned_option=-1
+        self.option_contd=0
         self.state.current_capacity = 0
         self.__customers_ids = []
         self.__change_to_idle()
@@ -395,8 +550,9 @@ class Vehicle(object):
         cumulative_discounted_reward = self.decay_lambda * np.sum([self.discount_factor**(t+1) for t in range((self.end_tick-self.start_wait_tick)//60)])  # 60 is t_unit
         self.decay_lambda *= self.discount_factor**((self.end_tick-self.start_wait_tick)//60)  # update lambda, the last update was when it arrived at charging station
         self.reward += - BETA_TIME * 60*cumulative_discounted_reward - BETA_CHARGE_COST * unit_time_price * self.decay_lambda
+        self.cum_reward+=- BETA_TIME * 60*cumulative_discounted_reward - BETA_CHARGE_COST * unit_time_price *self.decay_lambda
         terminate_flag=False
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, terminate_flag, self.reward, (self.end_tick - self.start_tick)//60])
+        self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, terminate_flag, self.reward, (self.end_tick - self.start_tick)//60])
         self.mileage_per_charge_cycle = 0
         self.__change_to_idle()
         self.__reset_plan()
@@ -411,6 +567,7 @@ class Vehicle(object):
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
         #  self.reward += - BETA_TIME * (self.end_tick - self.start_wait_tick) - self.decay_lambda* QUICK_END_CHARGE_PENALTY
         self.reward -= self.decay_lambda * QUICK_END_CHARGE_PENALTY
+        self.cum_reward-=QUICK_END_CHARGE_PENALTY
         self.decay_lambda *= self.discount_factor
         terminate_flag=False
         self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, terminate_flag, (self.end_tick - self.start_tick)//60])
@@ -434,9 +591,18 @@ class Vehicle(object):
         if len(self.time_ticks) > 0:
             current_coords = self.state.per_tick_coords.pop(0)
             current_dist = self.state.per_tick_dist.pop(0)
+
             current_duration = self.time_ticks.pop(0)
+
+            if self.state.status!=status_codes.V_OCCUPIED:
+                self.idle_dist+=current_dist*MILE_PER_METER
+                self.idle_time += current_duration/60
+
+
             self.decay_lambda *= self.discount_factor
-            self.reward += self.decay_lambda*(-BETA_DIST * current_dist * MILE_PER_METER - BETA_TIME * current_duration)
+            # self.reward += self.decay_lambda*(-BETA_DIST * current_dist * MILE_PER_METER - BETA_TIME * current_duration)
+            self.reward+=-BETA_DIST * current_dist * MILE_PER_METER - BETA_TIME * current_duration
+            self.cum_reward+=-BETA_DIST * current_dist * MILE_PER_METER - BETA_TIME * current_duration
             # if not self.no_charge_trial:
             self.state.SOC -= (current_dist * MILE_PER_METER / self.state.mile_of_range) * SIM_ACCELERATOR * self.non_charging_mask
 

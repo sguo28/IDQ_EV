@@ -1,5 +1,5 @@
 # from simulator.services.routing_service import RoutingEngine
-from config.setting import OFF_DURATION, RELOCATION_DIM, OPTION_DIM
+from config.hex_setting import OFF_DURATION, RELOCATION_DIM
 from novelties import status_codes
 from simulator.models.customer.customer import Customer
 from simulator.models.customer.request import request
@@ -24,8 +24,9 @@ def local_seed(seed):
         np.random.set_state(state)  # put the state back on
 
 class hex_zone:
-    def __init__(self, hex_id, coord,xy_coord, coord_list, match_zone, neighbors, charging_station_ids, charging_hexes,
-                 charging_coords, od_split, trip_time, t_unit, epoch_length):
+
+    def __init__(self, hex_id, coord,row_col_coord, coord_list, match_zone, neighbors, charging_station_ids, charging_hexes,
+                 charging_coords, od_split, trip_time, t_unit, epoch_length,seed):
         """
         hex_id: id of the hexagon zone in the shapefile
         coord: lon and lat values
@@ -35,10 +36,11 @@ class hex_zone:
         charging_coords: list of coordinates of the 5 charging stations
         epoch_length: total ticks per epoch of simulation: 60 * 24 * SIM_DAYS
         """
+        self.seed=seed
         self.hex_id = hex_id
         self.match_zone_id = match_zone
         self.lon, self.lat = coord
-        self.x,self.y = xy_coord
+        self.row_id, self.col_id = row_col_coord
         self.coord_list = coord_list  # this is the list for all the lon lat coordinates of the hexagons
         od_split = np.reshape(od_split, (od_split.shape[0], od_split.shape[-1]))
         trip_time = np.reshape(trip_time, (trip_time.shape[0], trip_time.shape[-1]))  # remove one of the dimension
@@ -60,10 +62,9 @@ class hex_zone:
         self.served_num = 0
         self.removed_passengers = 0
         self.served_pass = 0
+        self.total_served=0
         self.longwait_pass = 0
         self.veh_waiting_time = 0
-        self.rands = []  # the set of random arrivals generated
-        self.served_id = []
         self.total_pass = 0  # this also servers as passenger id
 
         self.t_unit = t_unit  # number of ticks per hour
@@ -94,11 +95,15 @@ class hex_zone:
         :return:
         '''
         # copy the arrival rate list multiple times!
-        with local_seed(self.hex_id):
+
+
+        # high=[i+np.ceil(0.1*i) for i in low]
+        with local_seed(self.seed):
             self.arrivals = np.random.poisson(list(self.arrival_rate) * int(
                 max(1, np.ceil(self.epoch_length / len(self.arrival_rate) / self.t_unit))),
                                               size=(self.t_unit, len(self.arrival_rate) * int(max(1, np.ceil(
                                                   self.epoch_length / len(self.arrival_rate) / self.t_unit)))))
+
             self.arrivals = self.arrivals.flatten('F')  # flatten by columns-major
             self.arrivals = list(self.arrivals)#inverse
             self.arrivals.reverse()
@@ -123,7 +128,7 @@ class hex_zone:
         :param tick: current time
         :return:
         '''
-        with local_seed(tick):  # fix the random seed
+        with local_seed(int(self.seed*1e4)+(tick//60)%(24*60)):  # fix the random seed
             hour = tick // (
                     self.t_unit * 60) % 24  # convert into the corresponding hours. Tick are seconds and is incremeted by 60 seconds in each iteration
             # print('hour {}  tick{}'.format(hour, tick))
@@ -162,8 +167,10 @@ class hex_zone:
         code for updating the passenger status / or remove them if picked up
         """
         remove_ids = []
+        self.longwait_pass=0
+        self.served_pass=0
         for pid in self.passengers.keys():
-            if self.passengers[pid].status > 1:
+            if self.passengers[pid].matched==True:
                 self.served_pass +=1
                 remove_ids.append(pid)
             elif self.passengers[pid].waiting_time >= self.passengers[pid].max_tolerate_delay:  # remove passengers after 10 ticks.
@@ -190,12 +197,11 @@ class hex_zone:
 
     def dispatch(self, vehicles, current_time):
         '''
+        todo: fulfill OFF_DUTY cycle: specify when to trigger OFF_Duty status 
         :vehicles: is dict with key and values
         '''
         for vehicle in vehicles.values():
             action_id = vehicle.state.dispatch_action_id
-            converted_action_id = vehicle.state.converted_action_id
-            vehicle.assigned_option = action_id  if action_id < 3 else -1
             offduty = 0  # actions are attached before implementing dispatch
             if offduty:
                 off_duration = np.random.randint(OFF_DURATION / 2, OFF_DURATION * 3 / 2)
@@ -203,41 +209,38 @@ class hex_zone:
                 vehicle.take_rest(off_duration)
             else:
                 # Get target destination and key to cache
-                target, charge_flag, target_hex_id, c_id,stay_flag = self.convert_action_to_destination(vehicle, converted_action_id)
+                target, charge_flag, target_hex_id, cid = self.convert_action_to_destination(vehicle, action_id)
                 vehicle.state.destination_hex = target_hex_id
                 vehicle.state.origin_hex = vehicle.state.hex_id
                 vehicle.state.need_route = True
                 if charge_flag == 0:
                     if isinstance(vehicle.state.current_hex, list): print('relo index wrong')
-                    vehicle.cruise(target, action_id, current_time, stay_flag)
+                    vehicle.cruise(target, action_id, current_time)
                     # print('Vehicle is cruising from {} to {}'.format(vehicle.state.hex_id, target_hex_id))
                 else:
                     if isinstance(vehicle.state.current_hex, list): print('charging index wrong')
-                    vehicle.head_for_charging_station(c_id, target, current_time, action_id)
+                    vehicle.head_for_charging_station(cid, target, current_time, action_id)
                     # print('The charing station ID for vehicle {} is {}'.format(vehicle.state.vehicle_id, cid))
 
-    def convert_action_to_destination(self, vehicle, converted_action_id):
+    def convert_action_to_destination(self, vehicle, action_id):
         '''
         vehicle: objects
         action_id: action ids from 0-11, pre-derived from DQN
         '''
         cid = None # charging_station_id
-        stay_flag = False
         valid_relocation_space = [vehicle.state.hex_id] + self.neighbor_hex_id
         try:
-            target_hex_id = valid_relocation_space[converted_action_id]
+            target_hex_id = valid_relocation_space[action_id]
             lon, lat = self.coord_list[target_hex_id]
             charge_flag = 0
-            if converted_action_id == 0:
-                stay_flag = True
         except IndexError:
-            print('INVALID ACTION!!!!ACTION_ID IS {}'.format(converted_action_id))
-            cid = self.nearest_cs[converted_action_id - RELOCATION_DIM]
+            print(vehicle.state.hex_id,self.neighbor_hex_id)
+            cid = self.nearest_cs[action_id - RELOCATION_DIM]
             target_hex_id = self.charging_hexes[cid]
-            lon, lat = self.charging_station_loc[self.nearest_cs[converted_action_id - RELOCATION_DIM]]
+            lon, lat = self.charging_station_loc[self.nearest_cs[action_id - RELOCATION_DIM]]
             charge_flag = 1
         target = (lon, lat)
-        return target, charge_flag, target_hex_id, cid, stay_flag
+        return target, charge_flag, target_hex_id, cid
 
     def get_num_arrivals(self):
         return self.narrivals

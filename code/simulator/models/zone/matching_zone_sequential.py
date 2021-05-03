@@ -1,10 +1,11 @@
 from novelties import status_codes
 from collections import defaultdict
-from config.setting import REJECT_TIME, SEC_PER_MIN
+from config.hex_setting import REJECT_TIME, SEC_PER_MIN
+import numpy as np
 
 
 class matching_zone(object):
-    def __init__(self, m_id, hex_zones, time_od):
+    def __init__(self, m_id, hex_zones, time_od,terminal_states):
         """
         m_id: matching zone id
         hex_zones: the list of hex zone objects
@@ -15,6 +16,7 @@ class matching_zone(object):
         self.local_hex_collection = {hex.hex_id: hex for hex in hex_zones}  # create a a local hex
         self.num_matches = 0
         self.time_od = time_od
+        self.terminal_states=terminal_states
 
     def get_local_collection(self):
         return self.local_hex_collection
@@ -44,7 +46,7 @@ class matching_zone(object):
         '''
         for hex in self.hex_zones:
             for veh in hex.vehicles.values():
-                veh.step(timestep,timetick)
+                veh.step(timestep,timetick,self.terminal_states)
 
     def async_demand_gen(self, tick):
         # do the demand generation for all hex zones in the matching zone
@@ -109,7 +111,7 @@ class matching_zone(object):
         '''
         return sum([h.veh_waiting_time for h in self.hex_zones])
 
-    def match(self):
+    def match(self,tick):
         '''
         Perform the matching here.
         :return:
@@ -117,9 +119,9 @@ class matching_zone(object):
         # get all vehicles and passengers first
         all_pass = self.get_all_passenger()
         all_veh = self.get_all_veh()
-        self.matching_algorithms(all_pass, all_veh)
+        self.matching_algorithms(all_pass, all_veh,tick)
 
-    def matching_algorithms(self, passengers, vehicles):
+    def matching_algorithms(self, passengers, vehicles,tick):
         '''
         todo: complete the matching algorithm here
         todo: change the following 0.1 to some threshold
@@ -134,13 +136,16 @@ class matching_zone(object):
         # print(
         #     'Current matching zone={}, Total matched passengers={}, Number of passengers={}, Number of drivers={}'.format(
         #         self.matching_zone_id, self.num_matches, len(passengers.keys()), len(vehicles.keys())))
+        matched=0
+        self.num_matches=0
         if len(passengers.keys()) > 0 and len(vehicles.keys()) > 0:
             vehicles = {key: value for key, value in vehicles.items() if value.state.status in [status_codes.V_IDLE,status_codes.V_STAY, status_codes.V_CRUISING]}
             if len(vehicles.keys()) > 0:
-                self.num_matches += self.match_requests(vehicles, passengers)
+                matched=self.match_requests(vehicles, passengers,tick)
+                self.num_matches +=matched
 
     ##### match requests to vehicles ######
-    def match_requests(self, vehicles, passengers):
+    def match_requests(self, vehicles, passengers,tick):
         """
         :param vehicles:
         :param passengers:
@@ -151,10 +156,22 @@ class matching_zone(object):
 
         vehs = [veh for veh in vehicles.values()]
 
-        r_hex_id = [customer.request.origin_id for customer in passengers.values()]
-        requests = [customer for customer in passengers.values()]
+        customers=np.array([cs for cs in passengers.values()])
+        wait_time=np.array([cs.waiting_time for cs in customers])
+        inds=np.flip(np.argsort(wait_time)) #highest to lowest
+
+        #sort the customers from longest waiting to shortest waiting
+        sorted_customer=customers[inds]
+
+        r_hex_id = [customer.request.origin_id for customer in sorted_customer]
+        requests = [customer for customer in sorted_customer]
 
         od_mat = self.time_od[v_hex_id,:][:,r_hex_id]
+        # update the time with already matching time
+        for cid,cs in enumerate(requests):
+            od_mat[:,cid]+=cs.waiting_time
+
+
         assignments = self.assign_nearest_vehicle(vehs, od_mat)
 
         for [v_id, r_id] in assignments:
@@ -166,7 +183,8 @@ class matching_zone(object):
             vehicle.customer = customer  # add matched passenger to the current on
             vehicle.state.need_route = True
             # vehicle.state.current_hex = customer.get_origin()
-            vehicle.head_for_customer(customer.get_origin_lonlat(),customer.get_origin())
+            vehicle.head_for_customer(customer.get_origin_lonlat(),customer.get_origin(),tick)
+
 
         return len(assignments)  # record nums of getting matched
 
@@ -180,14 +198,24 @@ class matching_zone(object):
         """
         assignments = []
         time = od_mat
-        for vid, veh in enumerate(vehicles):
-            if vid > time.shape[1]:
-                break
-            rid = time[vid].argmin()
-            # if tt > self.reject_wait_time:
-            #     continue
-            time[:,rid] = 1e9
-            assignments.append([vid, rid])  # o-d's hex_id, trip time, and distance
+
+        for rid in range(time.shape[1]): #loop through all columns
+            if time[:,rid].min()>900:
+                continue
+            vid=time[:,rid].argmin()
+            time[vid,:]=1e9 #mask vehicle out
+            assignments.append([vid,rid])
+
+        # for vid, veh in enumerate(vehicles):
+        #     if vid > time.shape[1]:
+        #         break
+        #     if time[vid].min()>600:
+        #         continue #no match for the vehicle if the relocation time + matching time is very large
+        #     rid = time[vid].argmin()
+        #     # if tt > self.reject_wait_time:
+        #     #     continue
+        #     time[:,rid] = 1e9
+        #     assignments.append([vid, rid])  # o-d's hex_id, trip time, and distance
         return assignments
 
     def get_metrics(self):
@@ -195,4 +223,6 @@ class matching_zone(object):
         num_long_wait_pass = sum([h.get_num_longwait_pass() for h in self.hex_zones])
         num_served_pass = sum([h.get_num_served_pass() for h in self.hex_zones])
         num_idle_vehs = len([veh for h in self.hex_zones for veh in h.vehicles.values() if veh.state.status == status_codes.V_IDLE])
-        return [self.num_matches, num_arrivals, num_long_wait_pass, num_served_pass, num_idle_vehs]
+        num_assign_vehs = len([veh for h in self.hex_zones for veh in h.vehicles.values() if veh.state.status == status_codes.V_ASSIGNED])
+        total_vehs=len([veh for h in self.hex_zones for veh in h.vehicles.values()])
+        return [self.num_matches, num_arrivals, num_long_wait_pass, num_served_pass, num_idle_vehs,num_assign_vehs,total_vehs]

@@ -1,7 +1,7 @@
 class VehicleBehavior(object):
     available = True
 
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         pass
 
 
@@ -11,7 +11,7 @@ class Waytocharge(VehicleBehavior):
     '''
     available = False
     # Updated remaining time to destination
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         arrived = vehicle.update_time_to_destination()
         if arrived: # arrive at charing station
             vehicle.start_waitpile(tick)
@@ -35,16 +35,16 @@ class Tobecruised(VehicleBehavior):
 
 class Cruising(VehicleBehavior):
     # Updated remaining time to destination, if arrived states changes to parking
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         arrived = vehicle.update_time_to_destination()
         if arrived:
-            vehicle.park(tick) # arrived and be idle.
+            vehicle.park(tick,terminal_states) # arrived and be idle.
             return
 class Stay(VehicleBehavior):
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         arrived = vehicle.update_time_to_destination()
         if arrived:
-            vehicle.park(tick) # arrived and be idle.
+            vehicle.park(tick,terminal_states) # arrived and be idle.
             return
 
     # def drive(self, vehicle, timestep):
@@ -68,7 +68,7 @@ class Stay(VehicleBehavior):
 class Occupied(VehicleBehavior):
     available = False
     # Updated remaining time to destination, if arrived customer gets off
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         arrived = vehicle.update_time_to_destination()
         if arrived:
             vehicle.dropoff(tick)
@@ -76,7 +76,7 @@ class Occupied(VehicleBehavior):
 class Assigned(VehicleBehavior):
     available = False
     # Updated remaining time to destination, if arrived, update customer ID and picks him up
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         arrived = vehicle.update_time_to_destination()
         if arrived:
             vehicle.state.need_route = True
@@ -85,7 +85,7 @@ class Assigned(VehicleBehavior):
 class OffDuty(VehicleBehavior):
     available = False
     # Updated remaining time to destination, if returned state changes to parking
-    def step(self, vehicle, tick):
+    def step(self, vehicle, tick,terminal_states):
         returned = vehicle.update_time_to_destination()
         if returned:
             vehicle.park()

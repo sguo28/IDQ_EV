@@ -5,7 +5,7 @@ from logging import getLogger
 from random import randrange
 import geopandas as gpd
 import numpy as np
-from config.hex_setting import NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, \
+from config.setting import NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, HEX_ROUTE_FILE, \
     ALL_HEX_ROUTE_FILE, CS_DATA_PATH, STORE_TRANSITION_CYCLE, SIM_DAYS, ALL_SUPERCHARGING, N_VEHICLES, \
     N_DUMMY_VEHICLES, N_DQN_VEHICLES, MAP_WIDTH, MAP_HEIGHT, NUM_CHANNELS, HEX_DIFFUSION_PATH
 from logger import sim_logger
@@ -13,26 +13,11 @@ from novelties import agent_codes, status_codes
 from .models.charging_pile.charging_pile import charging_station
 from .models.vehicle.vehicle_option import Vehicle
 from .models.vehicle.vehicle_state import VehicleState
-from .models.zone.hex_zone import hex_zone
+from .models.zone.hex_zone_option import hex_zone
 from .models.zone.matching_zone_sequential import matching_zone
 import ijson
 
 class Simulator(object):
-    """
-    todo: extract agent's trajectory to train f function: [s1,s2,s3,s4,...,sn] where sn is the terminal state
-    todo: we consider the terminal state for the trajectory is triggered if
-    (1) the target hex is reached with all the way cruising or
-    (2) being matched on the half way and finished serving customer, the terminate hex id is the customer's destination.
-    we consider that the "shortcut" exists between the initial hex and the customer' destination, which will bridge the 'distance' and in turn improve the connectivity.
-    todo: we next perform the training for f function approximator, with the loss of G, as in Eq 5.
-    todo: the valid trajectory for policy training is the ones starting with initial state and ending with terminal state, or vise versa.
-    the initial/terminal state is determined upon the threshold, trained by f_func approximator.
-    todo: we then train the policy network with pseudo reward, f(s)-f(s') augmenting with explict reward, which can be demand-supply gap.
-    In this case, we can trade-off the distant relocation while considering the potential reward.
-    todo: so far, we are able to generate top k options with argmaxQ, corresponding with hex_id in the terminal state set, which is hourly updated regarding the dynamics of connectivity.
-    todo: finally, we save the parameters of DQN, which can generate top k options with the input of state,
-     being stored in a dict, and augmenting to the premitive action space. And in case we also save the f approximator.
-    """
     def __init__(self, start_time, timestep, isoption=False,islocal=True,ischarging=True):
         self.reset_time(start_time, timestep)
         self.last_vehicle_id = 1
@@ -47,7 +32,6 @@ class Simulator(object):
         self.hex_zone_collection = {}
         # DQN for getting actions and dumping transitions
         self.all_transitions = []
-        self.option_trajectories = []
         self.charging_station_collections = []
         self.snapped_hex_coords_list = [[0,0]]
         self.num_match = 0
@@ -59,12 +43,11 @@ class Simulator(object):
         self.global_state_tensor = np.zeros((NUM_CHANNELS, MAP_WIDTH, MAP_HEIGHT))  # t, c, w, h
         # self.global_state_tensor[2] = 1e6  # queue length
         self.global_state_buffer=dict()
+
         self.with_charging = ischarging
         self.local_matching = islocal
         self.with_option = isoption
         self.hex_diffusions = None
-        self.f_func_transition = []
-        self.option_transition = []
 
     def reset_time(self, start_time=None, timestep=None):
         if start_time is not None:
@@ -137,8 +120,6 @@ class Simulator(object):
             # self.hex_routes = pickle.load(f)
             self.hex_routes=pickle.load(f)
 
-        # beta
-        self.option_f_value = df['beta'].to_numpy()
         if not self.local_matching:
             df['cluster_la'] = 0 # set a mask to combine to one matching zone.
         matchzones = np.unique(df['cluster_la'])
@@ -153,6 +134,7 @@ class Simulator(object):
         self.xy_coords = xy_coords
         demand = self.process_trip(trip_file)
         travel_time = self.process_trip(travel_time_file)
+
 
         self.hex_diffusions = self.get_hex_diffusions(HEX_DIFFUSION_PATH, xy_coords)
 
@@ -275,7 +257,7 @@ class Simulator(object):
         self.total_num_arrivals = sum([item[1] for item in metrics])
         self.total_num_longwait_pass = sum([item[2] for item in metrics])
         self.total_num_served_pass = sum([item[3] for item in metrics])
-        self.total_idled_vehicles = sum([item[4] for item in metrics])
+        # self.total_idled_vehicles = sum([item[4] for item in metrics])
         # total_assigned=sum([item[5] for item in metrics])
         # total_v=sum([item[6] for item in metrics])
         # print(self.num_match,self.total_num_arrivals,self.total_num_served_pass,self.total_idled_vehicles,total_assigned,total_v)
@@ -299,7 +281,7 @@ class Simulator(object):
             for hex_id, veh in zip(real_time_hex_id,vehs_to_update):
                 veh.state.current_hex = hex_id
 
-        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.__t) for vehicle in vehs_to_update]
+        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.snapped_hex_coords_list, self.__t) for vehicle in vehs_to_update]
 
         [self.charging_station_collections[vehicle.get_assigned_cs_id()].add_arrival_veh(vehicle) \
          for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]
@@ -307,12 +289,14 @@ class Simulator(object):
     def get_local_states(self):
         state_batches = []
         num_valid_relocations = []
+        on_option_flags = []  # if on option, the agent will continuouly get generated actions from the option DQN.
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
                 if vehicle.state.agent_type == agent_codes.dqn_agent and vehicle.state.status == status_codes.V_IDLE:
                     state_batches.append(vehicle.dump_states(self.__t))  # (tick, hex_id, SOC)
                     num_valid_relocations.append(len([0] + self.hex_zone_collection[vehicle.get_hex_id()].neighbor_hex_id))
-        return state_batches, num_valid_relocations
+                    on_option_flags.append(vehicle.assigned_option)
+        return state_batches, num_valid_relocations, on_option_flags
 
     def get_local_infos(self):
         state_batches = []
@@ -365,13 +349,13 @@ class Simulator(object):
                 cs.hex_id].n_charges
         self.global_state_buffer[t]=tmp_state
 
-    def attach_actions_to_vehs(self, action_ids):
+    def attach_actions_to_vehs(self, converted_action_ids,assigned_opts):
         dqn_agents = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
                       vehicle.state.agent_type == agent_codes.dqn_agent and \
                       vehicle.state.status == status_codes.V_IDLE]
 
-        for veh, action_id in zip(dqn_agents, action_ids):
-            veh.send_to_dispatching_pool(action_id) # and interpret the actions at hex_zone dispatching function.
+        for veh, converted_action_id, opts in zip(dqn_agents, converted_action_ids, assigned_opts):
+            veh.send_to_dispatching_pool(converted_action_id, opts) # and interpret the actions at hex_zone dispatching function.
 
     def vehicle_step_update(self, timestep, tick):
         [m.update_vehicles(timestep, tick) for m in self.match_zone_collection]
@@ -429,10 +413,7 @@ class Simulator(object):
 
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
-                dumped_traj =vehicle.dump_option_trajectories()
-                # print('The trajectories looks like: {}'.format(dumped_traj))
                 self.all_transitions += vehicle.dump_transitions()
-                self.option_trajectories += dumped_traj
 
     def last_step_transactions(self,tick):
         #store all the transactions from the vehicles:
@@ -447,24 +428,17 @@ class Simulator(object):
         """
         state, action, next_state, reward, terminate_flag, time_steps, num_valid_relos_ = None, None, None, None, None, None, None
         all_transitions = np.array(self.all_transitions, dtype=object)
-        if len(all_transitions)>0:
+        if len(all_transitions) > 0:
             # print('First row of Transitions are:',all_transitions[1])
             [state, action, next_state, reward, terminate_flag, time_steps] = [all_transitions[:, i] for i in range(6)]
         if state is not None:
             num_valid_relos_ = [len([0] + self.hex_zone_collection[state_i[1]].neighbor_hex_id) for state_i in
                                 next_state]  # valid relocation for next state.
-
         return state, action, next_state, reward, terminate_flag, time_steps, num_valid_relos_
 
-    def dump_trajectories_to_option(self):
-        option_trajectory = np.array(self.option_trajectories)
-        if len(option_trajectory)>0:
-            [current_hex, next_hex] = [option_trajectory[:,i] for i in range(2)]
-            return current_hex, next_hex
-        else:
-            return None,None
     def get_current_time(self):
         return self.__t
+
 
     def summarize_metrics(self,main_metrics,demand_supply_gap_file, charging_od_file, cruising_od_file, matching_od_file):
 
