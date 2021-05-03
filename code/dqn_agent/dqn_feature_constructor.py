@@ -27,7 +27,7 @@ class FeatureConstructor:
         state_features = []
         time_features = self.construct_time_features(tick)
         # hex_one_hot = self.construct_one_hot_encoding_map(hex_id)
-        soc_level = np.digitize(soc,[0,0.1,0.2,0.25,0.3,0.4,0.5,0.65,0.8,1.0]) # level = 0 only means SOC<0 (never >1)
+        soc_level = soc #np.digitize(soc,[0,0.1,0.2,0.25,0.3,0.4,0.5,0.65,0.8,1.0]) # level = 0 only means SOC<0 (never >1)
         #  [0.8-1, 0.65-0.8, 0.5-0.65, 0.4-0.5, 0.3-0.4, 0.25-0.3, 0.2-0.25])
         state_features += [hex_id]
         state_features += [soc_level]
@@ -57,7 +57,7 @@ class FeatureConstructor:
     #     # lon, lat = self.hex_coord[hex_id]
     #     # loc_x, loc_y = self.convert_lonlat2xy(lon,lat)
     #     # d[loc_x, loc_y] = value
-    #     # return d.transpose()
+    #     # return d.transpose()xianzai
 
     def construct_time_features(self, tick):
         hourofday = tick % (60 * 60 * 24) / 24.0 * 2 * np.pi

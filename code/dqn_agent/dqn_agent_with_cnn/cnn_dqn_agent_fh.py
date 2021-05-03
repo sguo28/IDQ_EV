@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from config.hex_setting import LEARNING_RATE, GAMMA, REPLAY_BUFFER_SIZE, BATCH_SIZE, RELOCATION_DIM, CHARGING_DIM, \
     INPUT_DIM, DQN_OUTPUT_DIM, FINAL_EPSILON, HIGH_SOC_THRESHOLD, LOW_SOC_THRESHOLD, CLIPPING_VALUE, START_EPSILON, \
-    EPSILON_DECAY_STEPS, CNN_SAVE_PATH, SAVING_CYCLE, CNN_RESUME, STORE_TRANSITION_CYCLE, H_AGENT_SAVE_PATH, TERMINAL_STATE_SAVE_PATH,CUDA
+    EPSILON_DECAY_STEPS, CNN_SAVE_PATH, SAVING_CYCLE, CNN_RESUME, STORE_TRANSITION_CYCLE, H_AGENT_SAVE_PATH, TERMINAL_STATE_SAVE_PATH
 from dqn_agent.dqn_feature_constructor import FeatureConstructor
 from dqn_agent.replay_buffer import ReplayMemory
 from .cnn_dqn_network import DQN_network, DQN_target_network
@@ -17,48 +17,41 @@ from dqn_option_agent.option_network import OptionNetwork
 import time
 
 class DeepQNetworkAgent:
-    def __init__(self,hex_diffusion, option_num=0, isoption=False,islocal=True,ischarging=True):
+    def __init__(self,hex_diffusion, h_network, option_num=0, isoption=False,islocal=True,ischarging=True):
         self.learning_rate = LEARNING_RATE
         self.gamma = GAMMA
         self.start_epsilon = START_EPSILON
         self.final_epsilon = FINAL_EPSILON
         self.epsilon_steps = EPSILON_DECAY_STEPS
-        self.memory = ReplayMemory(REPLAY_BUFFER_SIZE)
+        self.f_memory = ReplayMemory(REPLAY_BUFFER_SIZE) #used for generaitng data for f_functions, this will store option pairs
+        self.memory=ReplayMemory(REPLAY_BUFFER_SIZE) #this is for small replay buffer, this will store primitive action pairs
         self.batch_size = BATCH_SIZE
         self.clipping_value = CLIPPING_VALUE
         self.input_dim = INPUT_DIM
         self.relocation_dim = RELOCATION_DIM
         self.charging_dim = CHARGING_DIM
         self.output_dim = DQN_OUTPUT_DIM
-        self.log_softmax=torch.nn.LogSoftmax(dim=1)
-        self.device =torch.device("cuda:{}".format(CUDA) if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.path = CNN_SAVE_PATH
         self.state_feature_constructor = FeatureConstructor()
-        self.q_network = DQN_network(self.input_dim, self.output_dim)
-        self.target_q_network = DQN_target_network(self.input_dim, self.output_dim)
-        self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.learning_rate)
-        self.lr_scheduler = StepLR(optimizer=self.optimizer,step_size=1000, gamma=0.99) # 1.79 e-6 at 0.5 million step.
         self.train_step = 0
-        self.load_network()
-        self.q_network.to(self.device)
-        self.target_q_network.to(self.device)
         self.decayed_epsilon = self.start_epsilon
         self.record_list = []
         self.global_state_dict = OrderedDict()
         self.time_interval = int(0)
-        self.global_state_capacity = 14*1440 # we store 5 days' global states to fit replay buffer size.
+        self.global_state_capacity = 5*1440 # we store 5 days' global states to fit replay buffer size.
         self.with_option = isoption
         self.with_charging = ischarging
         self.local_matching = islocal
         self.hex_diffusion = hex_diffusion
-        self.option_dim=0
+        self.num_option=option_num
+        self.option_dim=option_num
+        self.output_dim = self.num_option + self.relocation_dim + self.charging_dim
+        self.h_network_list = h_network
 
         if option_num>0:
-            #use option network
-            self.option_dim=option_num
-            self.h_network_list = []
-            self.load_option_networks(self.option_dim)
             self.middle_terminal = self.init_terminal_states()
+            self.load_option_networks(option_num)
 
     def load_option_networks(self,option_num):
         self.h_network_list=[]
@@ -76,8 +69,8 @@ class DeepQNetworkAgent:
         :return:
         """
         middle_terminal = dict()
-        for oid in range(self.option_dim):
-            with open( 'saved_f/term_states_%d.csv' % oid, 'r') as ts:
+        for oid in range(self.num_option):
+            with open('saved_f/term_states_%d.csv' % oid, 'r') as ts:
                 next(ts)
                 for lines in ts:
                     line = lines.strip().split(',')
@@ -86,6 +79,7 @@ class DeepQNetworkAgent:
                         middle_terminal[(oid, int(hr))].append(int(hid))
                     else:
                         middle_terminal[(oid, int(hr))] = [int(hid)]
+
         return middle_terminal
 
     def is_terminal(self,states,oid):
@@ -93,23 +87,9 @@ class DeepQNetworkAgent:
         :param states:
         :return: a list of bool
         """
+
         return [True if state[1] in self.middle_terminal[(oid,int(state[0] // (60 * 60) % 24))] else False for state in states]
 
-    def load_network(self):
-        if CNN_RESUME:
-            lists = os.listdir(self.path)
-            lists.sort(key=lambda fn: os.path.getmtime(self.path + "/" + fn))
-            newest_file = os.path.join(self.path, lists[-1])
-            path_checkpoint = newest_file  #'logs/test/cnn_dqn_model/duel_dqn_69120.pkl'  #
-            checkpoint = torch.load(path_checkpoint)
-
-            self.q_network.load_state_dict(checkpoint['net'])
-            self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-
-            self.train_step = checkpoint['step']
-            self.copy_parameter()
-            # self.optimizer.load_state_dict(checkpoint['optimizer'])
-            print('Successfully load saved network starting from {}!'.format(str(self.train_step)))
 
 
 
@@ -136,11 +116,14 @@ class DeepQNetworkAgent:
         :return:
         """
         terminate_option_mask = np.zeros((len(states),self.output_dim),dtype=bool)
-        for option in range(self.option_dim):
+        t1=time.time()
+        for option in range(self.num_option):
             terminate_option_mask[:,option] = self.is_terminal(states,option)  # set as 0 if not in terminal set
-        # for oid in range(self.option_dim,self.option_dim):
+        # for oid in range(self.num_option,self.option_dim):
         #     terminate_option_mask[:,oid] = 1 # mask out empty options
         return terminate_option_mask
+
+
 
     def get_actions(self, states, num_valid_relos, global_state,assigned_option_ids):
         """
@@ -153,35 +136,14 @@ class DeepQNetworkAgent:
         with torch.no_grad():
             self.decayed_epsilon = max(self.final_epsilon, (self.start_epsilon - self.train_step * (
                     self.start_epsilon - self.final_epsilon) / self.epsilon_steps))
-            state_reps = np.array([self.state_feature_constructor.construct_state_features(state) for state in states])
+            state_reps =np.array([self.state_feature_constructor.construct_state_features(state) for state in states])
             hex_diffusions = np.array([np.tile(self.hex_diffusion[state[1]], (1, 1, 1)) for state in
-                              states])  # state[1] is hex_id
+                              states] )# state[1] is hex_id
             mask = self.get_action_mask(states, num_valid_relos)  # mask for unreachable primitive actions
             option_mask = self.get_option_mask(states) # if the state is considered as terminal, we dont use it..
 
-            if random.random() > self.decayed_epsilon:  # epsilon = 0.1
-                full_action_values = self.q_network.forward(
-                    torch.from_numpy(np.array(state_reps)).to(dtype=torch.float32, device=self.device),
-                    torch.from_numpy(np.concatenate([np.tile(global_state,(len(states),1,1,1)),np.array(hex_diffusions)],axis=1)).to(dtype=torch.float32, device=self.device))
-                assigned_option_ids=np.array(assigned_option_ids,dtype=int)
-                #choose an action, in the following conditions:
-                #1. if it is a terminal state, select the one with the maximum Q value
-                #2  if it is not a terminal state, following the previous option policy to get the action (must)
-                # ---- if there is no previous options, randomly select a policy with the largest value
-                update_idx=assigned_option_ids>-1 #those states who are under options
-                full_action_values[
-                    np.arange(full_action_values.shape[0])[update_idx], assigned_option_ids[update_idx]] = 9e10
-                # print('take a look at processed mask {}'.format(mask))
-                terminate_option_mask = torch.from_numpy(option_mask).to(dtype=torch.bool, device=self.device)
-                full_action_values[
-                    terminate_option_mask] = -9e10  # if the chosen policy is in a terminal state, mask it out
-                full_action_values[torch.from_numpy(mask).to(dtype=torch.bool,device=self.device)] = -9e10
-                action_indexes = torch.argmax(full_action_values, dim=1).cpu().numpy()
-                # log_softmax = torch.softmax(full_action_values, dim=1)
-                # action_indexes = torch.flatten(torch.multinomial(log_softmax, 1)).cpu().numpy() # choose one action
-
-
-            else:
+            #We only use random actions
+            if True:
                 full_action_values = np.random.random(
                     (len(states), self.output_dim))  # generate a matrix with values from 0 to 1
                 assigned_option_ids=np.array(assigned_option_ids,dtype=int)
@@ -189,6 +151,7 @@ class DeepQNetworkAgent:
                 full_action_values[np.arange(full_action_values.shape[0])[update_idx],assigned_option_ids[update_idx]]=9e10 #must choose
                 full_action_values[option_mask] = -9e10 #if the chosen policy is in a terminal state, mask it out
                 full_action_values[mask] = -9e10 #choose other actions
+                # full_action_values[:,self.num_option]=-9e10 #disable stay aciton for learning f and h
                 action_indexes = np.argmax(full_action_values, 1)
 
         selected_actions=list(action_indexes)  #this is the set of actions selected by DQN, which will be used for training
@@ -204,6 +167,7 @@ class DeepQNetworkAgent:
                 contd_options[idx]=True
         #returning the identified actions, assigned options, and if it is a continuing option of a new option
         return selected_actions,action_to_execute,new_assigned_opts, contd_options
+
 
     def convert_option_to_primitive_action_id(self, action_indexes, state_reps, global_state, hex_diffusions, mask):
         """
@@ -274,103 +238,6 @@ class DeepQNetworkAgent:
         return samples
         # state, action, next_state, reward = zip(*samples)
         # return state, action, next_state, reward
-
-    def get_main_Q(self, local_state, global_state):
-        return self.q_network.forward(local_state, global_state)
-
-    def get_target_Q(self, local_state, global_state):
-        return self.target_q_network.forward(local_state, global_state)
-
-    def copy_parameter(self):
-        self.target_q_network.load_state_dict(self.q_network.state_dict())
-
-    def soft_target_update(self, tau):
-        """Soft update model parameters.
-        θ_target = τ*θ_local + (1 - τ)*θ_target
-        Params
-        ======
-            local_model (PyTorch model): weights will be copied from
-            target_model (PyTorch model): weights will be copied to
-            tau (float): interpolation parameter
-        """
-        for target_param, local_param in zip(self.target_q_network.parameters(), self.q_network.parameters()):
-            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
-
-
-    def train(self, record_hist):
-        self.train_step += 1
-        if len(self.memory) < self.batch_size:
-            print('batches in replay buffer is {}'.format(len(self.memory)))
-            return
-
-        transitions = self.batch_sample()
-        batch = self.memory.Transition(*zip(*transitions))
-
-        global_state_reps = [self.global_state_dict[int(state[0] / 60)] for state in
-                             batch.state]  # should be list of np.array
-
-        global_next_state_reps = [self.global_state_dict[int(state_[0] / 60)] for state_ in
-                                  batch.next_state]  # should be list of np.array
-
-        state_reps = [self.state_feature_constructor.construct_state_features(state) for state in batch.state]
-        next_state_reps = [self.state_feature_constructor.construct_state_features(state_) for state_ in
-                           batch.next_state]
-
-        hex_diffusion = [np.tile(self.hex_diffusion[state[1]],(1,1,1)) for state in batch.state]
-        hex_diffusion_ = [np.tile(self.hex_diffusion[state_[1]],(1,1,1)) for state_ in batch.next_state]
-
-        state_batch = torch.from_numpy(np.array(state_reps)).to(dtype=torch.float32, device=self.device)
-        action_batch = torch.from_numpy(np.array(batch.action)).unsqueeze(1).to(dtype=torch.int64, device=self.device)
-        reward_batch = torch.from_numpy(np.array(batch.reward)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
-        terminal_flag= torch.from_numpy(np.array(batch.terminate_flag)).unsqueeze(1).to(dtype=torch.int64, device=self.device)
-        time_step_batch = torch.from_numpy(np.array(batch.time_steps)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
-
-        next_state_batch = torch.from_numpy(np.array(next_state_reps)).to(device=self.device, dtype=torch.float32)
-        global_state_batch = torch.from_numpy(np.concatenate([np.array(global_state_reps),np.array(hex_diffusion)],axis=1)).to(dtype=torch.float32, device=self.device)
-        global_next_state_batch = torch.from_numpy(np.concatenate([np.array(global_next_state_reps), np.array(hex_diffusion_)],axis=1)).to(dtype=torch.float32,
-                                                                                        device=self.device)
-
-        # print('Any weired actions?', action_batch[action_batch>=self.output_dim])
-        # print('Any weired actions?', action_batch[action_batch<0])
-        q_state_action = self.get_main_Q(state_batch, global_state_batch).gather(1, action_batch.long())
-        # add a mask
-        all_q_ = self.get_target_Q(next_state_batch, global_next_state_batch)
-        mask = self.get_action_mask(batch.next_state, batch.valid_action_num)  # action mask for next state
-        option_mask = self.get_option_mask(batch.next_state)
-        all_q_[torch.from_numpy(option_mask).to(dtype=torch.bool,device=self.device)] = -9e10
-        all_q_[torch.from_numpy(mask).to(dtype=torch.bool,device=self.device)] = -9e10
-        maxq = all_q_.max(1)[0].detach().unsqueeze(1)
-        print('Max Q={}, Max target Q={},Gamma={}'.format(torch.max(q_state_action),torch.max(maxq),self.gamma))
-        y = reward_batch + (1-terminal_flag)*maxq*torch.pow(self.gamma,time_step_batch)
-        loss = F.smooth_l1_loss(q_state_action, y)
-        self.optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.q_network.parameters(), self.clipping_value)
-        self.optimizer.step()
-        self.lr_scheduler.step()
-
-        self.record_list.append([self.train_step, round(float(loss),3), round(float(reward_batch.view(-1).mean()),3),self.optimizer.state_dict()['param_groups'][0]['lr'],batch.reward[0], batch.state[0][-1]])
-        self.save_parameter(record_hist)
-        print('Training step is {}; Learning rate is {}; Epsilon is {}; Average loss is {:.3f}, number of topion used={}'.format(self.train_step,self.lr_scheduler.get_lr(),round(self.decayed_epsilon,4),loss,self.option_dim))
-
-    def save_parameter(self, record_hist):
-        # torch.save(self.q_network.state_dict(), self.dqn_path)
-        if self.train_step % SAVING_CYCLE == 0:
-            checkpoint = {
-                "net": self.q_network.state_dict(),
-                # 'optimizer': self.optimizer.state_dict(),
-                "step": self.train_step,
-                "lr_scheduler": self.lr_scheduler.state_dict()
-            }
-            if not os.path.isdir(self.path):
-                os.mkdir(self.path)
-            # print('the path is {}'.format('logs/dqn_model/duel_dqn_%s.pkl'%(str(self.train_step))))
-            torch.save(checkpoint, 'logs/test/cnn_dqn_model/duel_dqn_%d_%d_%d_%s.pkl' % (bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
-            # record training process (stacked before)
-            for item in self.record_list:
-                record_hist.writelines('{},{},{},{},{},{}\n'.format(item[0], item[1], item[2], item[3], item[4], item[5]))
-            print('Training step: {}, replay buffer size:{}, epsilon: {}, learning rate: {}, # of option:{}'.format(self.record_list[-1][0],len(self.memory), self.decayed_epsilon,self.lr_scheduler.get_lr(),self.option_dim))
-            self.record_list = []
 
     # def get_action_mask(self, batch_state, batch_valid_action):
     #     mask = np.zeros([len(batch_state), self.output_dim])
