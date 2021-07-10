@@ -154,7 +154,6 @@ class Customer(object):
         '''
         # initial_price = (full_service_duration * SPEED * MILE_PER_METER * TOTAL_COST_PER_MILE) - (
         #             WAIT_COST * customer_wait_time) + DRIVER_TIME_VALUE * full_service_duration
-        waiting_penalty=0
         if customer_wait_time<300: #waiting time less than 5 minutes
             waiting_penalty=customer_wait_time*WAIT_COST
         elif customer_wait_time>=300 and customer_wait_time<600:
@@ -163,6 +162,7 @@ class Customer(object):
             waiting_penalty = 900 * WAIT_COST+(customer_wait_time - 600) * 4 * WAIT_COST  # additional penalty for extra waiting tiem
 
         price =  - waiting_penalty + (total_trip_distance *  SERVICE_PRICE_PER_MILE) + (total_trip_duration * SERVICE_PRICE_PER_MIN)
+        price=max(price,1)
 
         return price
 

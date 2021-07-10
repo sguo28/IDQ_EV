@@ -26,7 +26,7 @@ def local_seed(seed):
 class hex_zone:
 
     def __init__(self, hex_id, coord,row_col_coord, coord_list, match_zone, neighbors, charging_station_ids, charging_hexes,
-                 charging_coords, od_split, trip_time, t_unit, epoch_length,seed):
+                 charging_coords, od_split, trip_time, t_unit, epoch_length,seed,demand_df):
         """
         hex_id: id of the hexagon zone in the shapefile
         coord: lon and lat values
@@ -72,6 +72,7 @@ class hex_zone:
         self.q_network = None
         self.narrivals = 0
         self.next_narrivals = 0
+        self.all_trips=demand_df.groupby('tick')
         # initialize the demand for each hexagon zone
         self.init_demand()
 
@@ -95,19 +96,30 @@ class hex_zone:
         :return:
         '''
         # copy the arrival rate list multiple times!
-
-
+        self.arrivals=[]
+        self.destinations=[]
+        for tick in range(1440):
+            try:
+                td=self.all_trips.get_group(tick)['destination_hid'].tolist()
+            except KeyError:
+                td=[]
+            self.arrivals.append(len(td))
+            self.destinations.append(td)
+        self.arrivals.append(0)
+        self.destinations.append([])
+        self.arrivals.reverse()
+        self.destinations.reverse()
         # high=[i+np.ceil(0.1*i) for i in low]
-        with local_seed(self.seed):
-            self.arrivals = np.random.poisson(list(self.arrival_rate) * int(
-                max(1, np.ceil(self.epoch_length / len(self.arrival_rate) / self.t_unit))),
-                                              size=(self.t_unit, len(self.arrival_rate) * int(max(1, np.ceil(
-                                                  self.epoch_length / len(self.arrival_rate) / self.t_unit)))))
-
-            self.arrivals = self.arrivals.flatten('F')  # flatten by columns-major
-            self.arrivals = list(self.arrivals)#inverse
-            self.arrivals.reverse()
-            self.arrivals.append(0)  #for output plotting purposes.
+        # with local_seed(self.seed):
+        #     self.arrivals = np.random.poisson(list(self.arrival_rate) * int(
+        #         max(1, np.ceil(self.epoch_length / len(self.arrival_rate) / self.t_unit))),
+        #                                       size=(self.t_unit, len(self.arrival_rate) * int(max(1, np.ceil(
+        #                                           self.epoch_length / len(self.arrival_rate) / self.t_unit)))))
+        #
+        #     self.arrivals = self.arrivals.flatten('F')  # flatten by columns-major
+        #     self.arrivals = list(self.arrivals)#inverse
+        #     self.arrivals.reverse()
+        #     self.arrivals.append(0)  #for output plotting purposes.
             # self.next_arrivals = list(self.arrivals[1:] + [self.arrivals[0]])
 
     def add_veh(self, veh):  # vehicle is an object
@@ -122,38 +134,54 @@ class hex_zone:
     def remove_veh(self, veh):
         self.vehicles.pop(veh.state.vehicle_id)  # remove the vehicle from the list
 
-    def demand_generation(self, tick):  # the arrival of passenger demand
-        '''
-        todo: pop n_arrivals in the next hour
-        :param tick: current time
-        :return:
-        '''
-        with local_seed(int(self.seed*1e4)+(tick//60)%(24*60)):  # fix the random seed
-            hour = tick // (
-                    self.t_unit * 60) % 24  # convert into the corresponding hours. Tick are seconds and is incremeted by 60 seconds in each iteration
-            # print('hour {}  tick{}'.format(hour, tick))
-            narrivals = self.arrivals.pop()  # number of arrivals
+    def demand_generation(self,tick):
+        destinations=self.destinations.pop()
+        hour = tick // (
+                self.t_unit * 60) % 24
+        self.arrivals.pop()
+        for i in range(len(destinations)):
+            # r={'id':self.total_pass,'origin_id':self.hex_id, 'origin_lat':self.lat, 'origin_lon':self.lon, \
+            #    'destination_id':destinations[i], 'destination_lat':self.coord_list[destinations[i]][1], 'destination_lon':self.coord_list[destinations[i]][0], \
+            #        'trip_time':self.trip_time[hour,destinations[i]],'request_time':tick}
+            # r=request(self.total_pass, self.hex_id, (self.lon,self.lat,), destinations[i], self.coord_list[destinations[i]],self.trip_time[hour,destinations[i]],tick)
+            self.passengers[(self.hex_id, self.total_pass)] = Customer(
+                request(self.total_pass, self.hex_id, (self.lon, self.lat), destinations[i],
+                        self.coord_list[destinations[i]], self.trip_time[hour, destinations[i]],
+                        tick))  # hex_id and pass_id create a unique passenger identifier
+            self.total_pass += 1
 
-            self.narrivals = narrivals
-            destination_rate = self.od_ratio[hour, :]
-            if narrivals > 0 and sum(destination_rate) > 0:
-                # print('Tick {} hour {} and tunit{}'.format(tick,hour,self.t_unit))
-                destination_rate = destination_rate / sum(destination_rate)  # normalize to sum =1
-                # destinations = np.random.choice(destination_rate.shape[-1], p=destination_rate,
-                #                                 size=narrivals)  # choose the destinations
-                destinations=weighted_random(destination_rate,narrivals)
-                for i in range(narrivals):
-                    # r={'id':self.total_pass,'origin_id':self.hex_id, 'origin_lat':self.lat, 'origin_lon':self.lon, \
-                    #    'destination_id':destinations[i], 'destination_lat':self.coord_list[destinations[i]][1], 'destination_lon':self.coord_list[destinations[i]][0], \
-                    #        'trip_time':self.trip_time[hour,destinations[i]],'request_time':tick}
-                    # r=request(self.total_pass, self.hex_id, (self.lon,self.lat,), destinations[i], self.coord_list[destinations[i]],self.trip_time[hour,destinations[i]],tick)
-                    self.passengers[(self.hex_id, self.total_pass)] = Customer(
-                        request(self.total_pass, self.hex_id, (self.lon, self.lat), destinations[i],
-                                self.coord_list[destinations[i]], self.trip_time[hour, destinations[i]],
-                                tick))  # hex_id and pass_id create a unique passenger identifier
-                    self.total_pass += 1
-
-        return
+    # def demand_generation(self, tick):  # the arrival of passenger demand
+    #     '''
+    #     todo: pop n_arrivals in the next hour
+    #     :param tick: current time
+    #     :return:
+    #     '''
+    #     with local_seed(int(self.seed*1e4)+(tick//60)%(24*60)):  # fix the random seed
+    #         hour = tick // (
+    #                 self.t_unit * 60) % 24  # convert into the corresponding hours. Tick are seconds and is incremeted by 60 seconds in each iteration
+    #         # print('hour {}  tick{}'.format(hour, tick))
+    #         narrivals = self.arrivals.pop()  # number of arrivals
+    #
+    #         self.narrivals = narrivals
+    #         destination_rate = self.od_ratio[hour, :]
+    #         if narrivals > 0 and sum(destination_rate) > 0:
+    #             # print('Tick {} hour {} and tunit{}'.format(tick,hour,self.t_unit))
+    #             destination_rate = destination_rate / sum(destination_rate)  # normalize to sum =1
+    #             # destinations = np.random.choice(destination_rate.shape[-1], p=destination_rate,
+    #             #                                 size=narrivals)  # choose the destinations
+    #             destinations=weighted_random(destination_rate,narrivals)
+    #             for i in range(narrivals):
+    #                 # r={'id':self.total_pass,'origin_id':self.hex_id, 'origin_lat':self.lat, 'origin_lon':self.lon, \
+    #                 #    'destination_id':destinations[i], 'destination_lat':self.coord_list[destinations[i]][1], 'destination_lon':self.coord_list[destinations[i]][0], \
+    #                 #        'trip_time':self.trip_time[hour,destinations[i]],'request_time':tick}
+    #                 # r=request(self.total_pass, self.hex_id, (self.lon,self.lat,), destinations[i], self.coord_list[destinations[i]],self.trip_time[hour,destinations[i]],tick)
+    #                 self.passengers[(self.hex_id, self.total_pass)] = Customer(
+    #                     request(self.total_pass, self.hex_id, (self.lon, self.lat), destinations[i],
+    #                             self.coord_list[destinations[i]], self.trip_time[hour, destinations[i]],
+    #                             tick))  # hex_id and pass_id create a unique passenger identifier
+    #                 self.total_pass += 1
+    #
+    #     return
 
     def remove_pass(self, pids):  # remove passengers
         '''

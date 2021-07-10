@@ -5,6 +5,7 @@ from .vehicle_behavior import Occupied, Cruising, Idle, Assigned, OffDuty, Wayto
 from logging import getLogger
 from collections import deque
 import numpy as np
+import random
 from config.hex_setting import SOC_PENALTY, MILE_PER_METER, SIM_ACCELERATOR, BETA_CHARGE_COST, BETA_EARNING, BETA_DIST, \
     BETA_TIME, IDLE_DURATION, QUICK_END_CHARGE_PENALTY, BETA_RANGE_ANXIETY, PER_TICK_DISCOUNT_FACTOR, OPTION_DIM
 
@@ -62,6 +63,7 @@ class Vehicle(object):
         self.recent_transitions = []  # deque(maxlen=10), store options
         self.prime_transition=[] #store primitive action pairs
         self.f_transition=[] #store transitions for calculating f
+        self.fo_transition=[] #store transitions for occupied trips
         self.total_earnings = 0
         self.working_time = 0
         self.idle_time=0
@@ -160,6 +162,16 @@ class Vehicle(object):
             self.f_transition=[self.f_transition[-1]]
         return exported_trans
 
+    def dump_fo_transitions(self):
+        #store all the prime transitions from the vehicle
+        exported_trans = []
+        if len(self.fo_transition) > 1:
+            exported_trans = self.fo_transition[:-1]
+            self.fo_transition=[self.fo_transition[-1]]
+        return exported_trans
+
+
+
     def get_mile_of_range(self):
         return self.state.set_range()
 
@@ -232,7 +244,7 @@ class Vehicle(object):
                 '''
                 # print('Vehicle status for generating routes:',self.state.status,self.state.hex_id,self.state.destination_hex)
                 if self.state.status<=1 or self.state.status==9:  #9 is the stay
-                    K = IDLE_DURATION
+                    K = 1 #IDLE_DURATION
                 else:
                     K=1 #no wait , for charging, dispatching, assigned status
                 self.time_ticks = [t_unit for _ in range(K)]
@@ -266,7 +278,6 @@ class Vehicle(object):
         self.prime_start_tick = tick
         self.prime_start_state = [self.prime_start_tick, self.state.hex_id, self.state.SOC]
 
-
         # only dump after one full transition is finished (and the new reward for matching is attached)
         # SOC follows exponential function:
         if self.assigned_option==-1: #no option assigned
@@ -275,7 +286,7 @@ class Vehicle(object):
             self.decay_lambda = 1.0
             self.start_tick = tick
             self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
-            self.f_start_state = [tick, self.state.hex_id]
+            self.f_start_state = [tick, self.state.hex_id,self.state.SOC]
         else:
             if self.option_contd == 0: #option assigned but started a new option
                 self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(
@@ -284,13 +295,12 @@ class Vehicle(object):
                 self.decay_lambda = 1.0
                 self.start_tick = tick
                 self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
-                self.f_start_state = [tick, self.state.hex_id]
+                self.f_start_state = [tick, self.state.hex_id,self.state.SOC]
             else: #option assigned, and continue flag is active
                 self.reward += - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
                 self.cum_reward+=self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
 
 
-        self.action = action
 
         self.opt_start_state = [tick, self.state.hex_id, self.state.SOC]
         self.opt_reward = self.reward  # record current reward
@@ -302,13 +312,39 @@ class Vehicle(object):
         else:
             self.__change_to_cruising()
 
+    def save_terminal(self,tick):
+        #for vehicle in terminal states, use the save function
+        # need to check if the vehicle is at the terminal state
+        if self.assigned_option>=0:
+            #save terminal with probability
+                if (tick+60)//60%1440==0:
+                    terminate=True
+                else:
+                    terminate=False
+                self.start_serve_tick = tick  # start serve tick is for full service cycle if being matched next
+                self.end_tick = tick
+                self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
+                self.f_end_state=[tick, self.state.hex_id,self.state.SOC]
+                trip_flag=False
+                # self.f_transition.append([self.opt_start_state, self.f_end_state])
+                steps = (self.end_tick - self.start_tick) // 60
+                rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
+                self.recent_transitions.append(
+                        [self.start_state, self.assigned_action, self.end_state, self.reward*rate, terminate,
+                         (self.end_tick - self.start_tick) // 60 ])
+                # print('Line 351 Intermediate recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),action, self.assigned_action,self.assigned_option))
+                # self.f_transition.append([self.opt_start_state, self.f_end_state])
+                self.assigned_option = -1
+                self.option_contd = 0
+
+
     def park(self, tick,terminate_states):
         ''':param
         '''
         self.start_serve_tick = tick  # start serve tick is for full service cycle if being matched next
         self.end_tick = tick
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
-        self.f_end_state=[tick, self.state.hex_id]
+        self.f_end_state=[tick, self.state.hex_id,self.state.SOC]
         trip_flag=False
         if self.prime_start_state is not None:
             self.prime_transition.append([self.prime_start_state,self.action,self.end_state,trip_flag, (self.end_tick - self.prime_start_tick)//60+1])
@@ -332,44 +368,14 @@ class Vehicle(object):
             #     (self.action,self.state.dispatch_action_id),self.assigned_action, self.assigned_action, self.assigned_option))
 
         else:
-            #need to check if the vehicle is at the terminal state
-            if self.state.hex_id in terminate_states[(self.assigned_option,tick//(60*60)%24)]: #arrived at the terminal state, we need to dump transitions
-                self.f_transition.append([self.opt_start_state,self.f_end_state])
-                self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward, terminate,
-                                                (self.end_tick - self.start_tick) // 60+1])
-                if self.assigned_action<0:
-                    print('error line 341')
-                    basdasdasdsad
-                # print('Line 341 End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),self.assigned_action, self.assigned_action,self.assigned_option))
-
-                #also dump the transitions following options
-                temp_reward=self.reward-self.opt_reward
-                action=self.action+OPTION_DIM #
-                steps = (self.end_tick - self.opt_start_tick) // 60 + 1
-                rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
-
-                self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
-                                                (self.end_tick - self.opt_start_tick) // 60+1])
-                if action<0:
-                    print('error line 354')
-                    basdasdasdsad
-                # print('Line 351 Intermediate recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),action, self.assigned_action,self.assigned_option))
-                self.f_transition.append([self.opt_start_state, self.f_end_state])
-                self.assigned_option=-1
-                self.option_contd=0
-            else:
                 #record the primitive transition followed by the options
                 temp_reward=self.reward-self.opt_reward
                 action=self.action+OPTION_DIM #
-                if action<0:
-                    print('error line 365')
-                    basdasdasdsad
                 steps = (self.end_tick - self.opt_start_tick) // 60 + 1
                 rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1))
                 self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
                                                 (self.end_tick - self.opt_start_tick) // 60+1])
                 # print('Line 361 Intermediate recording, current aciton is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id), action, self.assigned_action,self.assigned_option))
-
                 self.f_transition.append([self.opt_start_state, self.f_end_state])
 
         self.__reset_plan()
@@ -387,12 +393,24 @@ class Vehicle(object):
         self.__set_destination(destination)
         self.state.origin_hex=self.state.hex_id
         self.state.destination_hex=customer_hex_location
+        trip_flag=True
+        # self.f_start_state = [tick, self.state.hex_id,
+        #                       self.state.SOC]  # if not cruising ,meaning idle or stay, start a new transition for f
+        if self.prime_start_state is not None:
+            self.prime_transition.append([self.prime_start_state,self.action,[tick,self.state.hex_id,self.state.SOC],trip_flag, (tick - self.prime_start_tick)//60+1])
+        else:
+            print('Start state is None and I can not pop in new rewards')
         self.state.need_route=True
         self.state.assigned_customer_id = customer_hex_location
+
+        self.fo_start_tick=tick
+        self.fo_start_state=[tick, self.state.hex_id, self.state.SOC]
+
         self.__customers_ids.append(customer_hex_location)
-        if self.state.status!= status_codes.V_CRUISING :
-            if self.assigned_option==-1:
-                self.f_start_state=[tick,self.state.hex_id] #if not cruising ,meaning idle or stay, start a new transition for f
+        self.f_start_state = [tick, self.state.hex_id, self.state.SOC]
+        # if self.state.status!= status_codes.V_CRUISING :
+        #     if self.assigned_option==-1:
+        #          #if not cruising ,meaning idle or stay, start a new transition for f
         self.option_contd=0
         #get matched to a passenger, dump the transition
 
@@ -434,12 +452,18 @@ class Vehicle(object):
         self.__change_to_off_duty()
         # self.__log()
 
-    def pickup(self):
+    def pickup(self,tick):
         # assert self.get_location() == self.customer.get_origin_lonlat()
         self.state.destination_hex = self.customer.get_destination()
         self.state.origin_hex=self.state.hex_id
         self.state.need_route=True
         self.customer.ride_on()
+        # self.f_end_state = [tick, self.state.hex_id,
+        #                       self.state.SOC]  # if not cruising ,meaning idle or stay, start a new transition for f
+        # #
+        # self.f_transition.append([self.f_start_state, self.f_end_state])
+
+
         self.__customers.append(self.customer)
         customer_id = self.customer.get_id()
         # self.__reset_plan() # For now we don't consider routes of occupied trip
@@ -466,12 +490,7 @@ class Vehicle(object):
 
 
         trip_flag=True
-        if self.prime_start_state is not None:
-            self.prime_transition.append([self.prime_start_state,self.action,[tick,self.state.hex_id,self.state.SOC],trip_flag, (tick - self.prime_start_tick)//60+1])
-        else:
-            print('Start state is None and I can not pop in new rewards')
-
-        # self.f_end_state=[tick,self.state.hex_id]
+        # self.f_end_state = [tick, self.state.hex_id, self.state.SOC]
         # self.f_transition.append([self.f_start_state,self.f_end_state])
 
 
@@ -496,23 +515,32 @@ class Vehicle(object):
 
         steps=(self.end_tick - self.start_tick)//60+1
         rate=(self.discount_factor**steps-1)/(steps*(self.discount_factor-1))
-        self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward*rate, terminate,(self.end_tick - self.start_tick)//60+1])
-        if self.assigned_action < 0:
-            print('error line 501')
-            basdasdasdsad
-        # print('Line 492 Trip End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),
-        #     self.assigned_action, self.assigned_action, self.assigned_option))
 
-        if self.assigned_action!=self.action+OPTION_DIM:
+        self.fo_transition.append([self.fo_start_state,self.end_state])
+
+        if self.assigned_option>=0:
+            self.recent_transitions.append([self.start_state, self.assigned_action, self.end_state, self.reward*rate, terminate,(self.end_tick - self.start_tick)//60+1])
             temp_reward = self.reward - self.opt_reward
             steps = (self.end_tick - self.opt_start_tick) // 60 + 1
             rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1)) #discounted rate
-            action = self.action + OPTION_DIM  #
-            if action < 0:
-                print('error line 513')
-                basdasdasdsad
+            action = random.randrange(7) + OPTION_DIM  #random action as for trips.
+            #
             self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
                                             (self.end_tick - self.opt_start_tick) // 60 + 1])
+
+        # print('Line 492 Trip End of option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),
+        #     self.assigned_action, self.assigned_action, self.assigned_option))
+
+        if self.assigned_option==-1:
+            temp_reward = self.reward - self.opt_reward
+            steps = (self.end_tick - self.opt_start_tick) // 60 + 1
+            rate = (self.discount_factor ** steps - 1) / (steps * (self.discount_factor - 1)) #discounted rate
+            action = random.randrange(7) + OPTION_DIM  #random action as for trips.
+            action=self.assigned_action
+
+            self.recent_transitions.append([self.opt_start_state, action, self.end_state, temp_reward*rate, terminate,
+                                            (self.end_tick - self.opt_start_tick) // 60 + 1])
+
             # print('Line 502 Trip Intermediate option recording, current action is {}, Recorded action is {}, selected option is {}, option flag is {}'.format((self.action,self.state.dispatch_action_id),
             #     action, self.assigned_action, self.assigned_option))
 

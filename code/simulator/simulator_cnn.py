@@ -3,7 +3,9 @@ import time
 from scipy.spatial import cKDTree
 from logging import getLogger
 from random import randrange
+import random
 import geopandas as gpd
+import pandas as pd
 import numpy as np
 from config.hex_setting import NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, HEX_ROUTE_FILE, \
     ALL_HEX_ROUTE_FILE, CS_DATA_PATH, STORE_TRANSITION_CYCLE, SIM_DAYS, ALL_SUPERCHARGING, N_VEHICLES, \
@@ -17,13 +19,15 @@ from .models.zone.hex_zone import hex_zone
 from .models.zone.matching_zone_sequential import matching_zone
 import ijson
 
+
+
 class Simulator(object):
     def __init__(self, start_time, timestep, isoption=False,islocal=True,ischarging=True):
         self.reset_time(start_time, timestep)
         self.last_vehicle_id = 1
         self.vehicle_queue = []
-        sim_logger.setup_logging(self)
-        self.logger = getLogger(__name__)
+        # sim_logger.setup_logging(self)
+        # self.logger = getLogger(__name__)
         self.route_cache = {}
         self.current_dummyV = 0
         self.current_dqnV = 0
@@ -34,6 +38,7 @@ class Simulator(object):
         self.all_transitions = []
         self.prime_transitions = []
         self.f_transitions=[]
+        self.fo_transitions=[]
         self.charging_station_collections = []
         self.snapped_hex_coords_list = [[0,0]]
         self.num_match = 0
@@ -128,7 +133,23 @@ class Simulator(object):
         :param n_nearest:
         :return:
         '''
+
+        #read demand
+        filename = "../data/trips_on_day0.csv"
+        n = sum(1 for line in open(filename)) - 1  # number of records in file (excludes header)
+        s = int(n*0.3)  # desired sample size
+        random.seed(10)
+        skip = sorted(
+            random.sample(range(1, n + 1), n - s))  # the 0-indexed header will not be included in the skip list
+
+
+        # alltrips=pd.read_csv('../data/trips_on_day0.csv',skiprows=skip,dtype=int).groupby('origin_hid')
+
+
         local_rand_seed=np.random.randint(3) #randomly generating a seed for hex areas
+
+        alltrips = pd.read_csv('../data/trips_on_day{}.csv'.format(local_rand_seed), dtype=int).groupby('origin_hid')
+
         df = gpd.read_file(file_hex)  # tagged_cluster_hex
         charging_stations = gpd.read_file(file_charging)  # point geometry
         self.charging_kdtree = cKDTree(charging_stations[['snap_lon', 'snap_lat']])
@@ -139,7 +160,12 @@ class Simulator(object):
 
         if not self.local_matching:
             df['cluster_la'] = 0 # set a mask to combine to one matching zone.
+
+
         matchzones = np.unique(df['cluster_la'])
+
+
+
 
         hex_ids = df.index.tolist()
         print('Number of total hexagons:', len(hex_ids))
@@ -170,10 +196,14 @@ class Simulator(object):
         total_demand = 0
         charging_coords = charging_stations[['snap_lon', 'snap_lat']].values.tolist()
         _,charging_hexes=self.hex_kdtree.query(charging_coords)
+
+        self.all_neighbors=np.zeros((NUM_REACHABLE_HEX,7)).astype(int) #store the index here
         for h_idx, coords, row_col_coord, match_id in zip(hex_ids, hex_coords, row_col_coords, hex_to_match):
             #neighbors = df[df.geometry.touches(df.geometry[h_idx])].index.tolist()  # len from 0 to 6
             _,neighbors= self.hex_kdtree.query(coords,k=7)
-            neighbors=list(neighbors[1:]) #return the closet 6 locations
+            # neighbors=list(neighbors[1:]) #return the closet 6 locations
+            neighbors=list(neighbors)
+            self.all_neighbors[h_idx,:]=neighbors
             # if neighbors==[]:
             #     print('isolated zone with id',h_idx)
             #     if h_idx<NUM_REACHABLE_HEX-1:
@@ -182,11 +212,15 @@ class Simulator(object):
             #         neighbors=[h_idx-2]
             _, charging_idx = self.charging_kdtree.query(coords, k=n_nearest)  # charging station id
             if sum(demand[0, h_idx, :]) / 60 > maxdemand: maxdemand = sum(demand[0, h_idx, :]) / 60
+            try:
+                demand_df=alltrips.get_group(int(h_idx))
+            except KeyError:
+                demand_df=pd.DataFrame({'tick':[]})
             total_demand += sum(demand[0, h_idx, :])
             self.hex_zone_collection[h_idx] = hex_zone(h_idx, coords, row_col_coord, hex_coords, match_id, neighbors,
                                                        charging_idx, charging_hexes, charging_coords,
                                                        demand[:, h_idx, :], travel_time[:, h_idx, :],
-                                                       t_unit, epoch_length,local_rand_seed)
+                                                       t_unit, epoch_length,local_rand_seed,demand_df)
         hex_collects = []
         for m_idx in matchzones:
             h_ids = df[df['cluster_la'] == m_idx].index.tolist()
@@ -208,8 +242,9 @@ class Simulator(object):
         self.init_charging_station(CS_DATA_PATH)
 
         # init entering-market vehicle queue
-        vehicle_hex_ids = [hex_ids[i] for i in
-                           np.random.choice(len(hex_ids), size=N_VEHICLES)]  # , p=p)]
+        random.seed(10)
+        vehicle_hex_ids=[random.choice(hex_ids) for _ in range(N_VEHICLES)]
+        # vehicle_hex_ids = [hex_ids[i] for i in rands]  # , p=p)]
 
         n_vehicles = len(vehicle_hex_ids)
         vehicle_ids = range(self.last_vehicle_id, self.last_vehicle_id + n_vehicles)
@@ -419,7 +454,7 @@ class Simulator(object):
                 break
 
     def populate_vehicle(self, vehicle_id, vehicle_hex_id):
-        r = randrange(2)
+        r = 1
         if r == 0 and self.current_dummyV < N_DUMMY_VEHICLES:
             agent_type = agent_codes.dummy_agent
             self.current_dummyV += 1
@@ -468,6 +503,7 @@ class Simulator(object):
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
                 self.f_transitions += vehicle.dump_f_transitions()
+                self.fo_transitions+=vehicle.dump_fo_transitions()
 
     def last_step_transactions(self,tick):
         #store all the transactions from the vehicles:
@@ -512,6 +548,14 @@ class Simulator(object):
             [state,next_state]=[all_transitions[:,i] for i in range(2)]
         return state,next_state
 
+    def dump_fo_transitions(self):
+        state,next_state=None,None
+        all_transitions=np.array(self.fo_transitions,dtype=object)
+        if len(all_transitions)>0:
+            [state,next_state]=[all_transitions[:,i] for i in range(2)]
+        return state,next_state
+
+
     def get_current_time(self):
         return self.__t
 
@@ -551,10 +595,11 @@ class Simulator(object):
         self.all_transitions = []
         self.prime_transitions=[]
         self.f_transitions=[]
+        self.fo_transitions=[]
         self.global_state_buffer=dict()
 
 
-    def reset(self,start_time,timestep):
+    def reset(self,start_time,timestep,seed=None):
         #restart the simulator, but assuming the time of previous end time
         self.reset_time(start_time, timestep)
         self.last_vehicle_id = 1
@@ -571,10 +616,32 @@ class Simulator(object):
         self.current_dqnV = 0
 
         #reset random seed
-        local_rand_seed=np.random.randint(3)
+        if seed is None:
+           local_rand_seed=np.random.randint(3)
+        else:
+            local_rand_seed=seed
+
+
+        old=random.getstate()
+
+        filename = "../data/trips_on_day{}.csv".format(local_rand_seed)
+        n = sum(1 for line in open(filename)) - 1  # number of records in file (excludes header)
+        s = int(n*0.3)  # desired sample size
+        random.seed(10)
+        skip = sorted(
+            random.sample(range(1, n + 1), n - s))  # the 0-indexed header will not be included in the skip list
+        random.setstate(old)
+
+        alltrips = pd.read_csv('../data/trips_on_day{}.csv'.format(local_rand_seed),skiprows=skip, dtype=int).groupby('origin_hid')
 
         #reset hex zones
         for hex in self.hex_zone_collection.values():
+            h_idx=hex.hex_id
+            try:
+                demand_df=alltrips.get_group(int(h_idx))
+            except KeyError:
+                demand_df=pd.DataFrame({'tick':[]})
+            hex.all_trips=demand_df.groupby('tick')
             hex.seed=local_rand_seed
             hex.reset()
         #reset charging stations

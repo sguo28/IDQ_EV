@@ -168,8 +168,8 @@ class matching_zone(object):
 
         od_mat = self.time_od[v_hex_id,:][:,r_hex_id]
         # update the time with already matching time
-        for cid,cs in enumerate(requests):
-            od_mat[:,cid]+=cs.waiting_time
+        # for cid,cs in enumerate(requests):
+        #     od_mat[:,cid]+=cs.waiting_time
 
 
         assignments = self.assign_nearest_vehicle(vehs, od_mat)
@@ -200,7 +200,7 @@ class matching_zone(object):
         time = od_mat
 
         for rid in range(time.shape[1]): #loop through all columns
-            if time[:,rid].min()>900:
+            if time[:,rid].min()>240:
                 continue
             vid=time[:,rid].argmin()
             time[vid,:]=1e9 #mask vehicle out

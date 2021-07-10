@@ -80,7 +80,7 @@ class Assigned(VehicleBehavior):
         arrived = vehicle.update_time_to_destination()
         if arrived:
             vehicle.state.need_route = True
-            vehicle.pickup()
+            vehicle.pickup(tick)
 
 class OffDuty(VehicleBehavior):
     available = False
