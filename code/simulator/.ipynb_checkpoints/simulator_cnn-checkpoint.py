@@ -40,7 +40,6 @@ class Simulator(object):
         self.f_transitions=[]
         self.fo_transitions=[]
         self.charging_station_collections = []
-        self.trajectory_transitions=[]
         self.snapped_hex_coords_list = [[0,0]]
         self.num_match = 0
         self.total_num_arrivals = 0
@@ -298,9 +297,6 @@ class Simulator(object):
         # self.update_vehicles()  # push routes into vehicles
         # update passenger status
         # t1 = time.time()
-
-        print('now processing trips: {}, seed {}', self.filename,self.seed)
-
         [m.update_passengers() for m in self.match_zone_collection]
 
         # update the demand for each matching zone
@@ -541,11 +537,6 @@ class Simulator(object):
                 self.f_transitions += vehicle.dump_f_transitions()
                 self.fo_transitions+=vehicle.dump_fo_transitions()
 
-    def store_trajectory_from_veh(self):
-        for hex in self.hex_zone_collection.values():
-            for vehicle in hex.vehicles.values():
-                self.trajectory_transitions += vehicle.dump_trajectories()
-
     def last_step_transactions(self,tick):
         #store all the transactions from the vehicles:
         for hex in self.hex_zone_collection.values():
@@ -596,13 +587,6 @@ class Simulator(object):
             [state,next_state]=[all_transitions[:,i] for i in range(2)]
         return state,next_state
 
-    def dump_trajectories(self):
-        trajectory=None
-        all_transitions=self.trajectory_transitions
-        if len(all_transitions)>0:
-            trajectory=self.trajectory_transitions
-        return trajectory
-
 
     def get_current_time(self):
         return self.__t
@@ -632,9 +616,9 @@ class Simulator(object):
         if int(self.__t % 300) ==0:
             print('current tick is {}, recording data!!!!!!!!!!!'.format(self.__t//60))
             [demand_supply_gap_file.writelines('{},{},{}\n'.format(self.__t,hex.hex_id, (hex.arrivals[-1] - len(hex.vehicles.keys())) )) for hex in self.hex_zone_collection.values()]
-            [charging_od_file.writelines('{},{}\n'.format(veh.state.id,','.join(str(item) for item in od)))for veh in all_vehicles for od in veh.charging_od_pairs]
-            [cruising_od_file.writelines('{},{}\n'.format(veh.state.id,','.join(str(item) for item in od))) for veh in all_vehicles for od in veh.repositioning_od_pairs]
-            [matching_od_file.writelines('{},{}\n'.format(veh.state.id,','.join(str(item) for item in od))) for veh in all_vehicles for od in veh.matching_od_pairs]
+            [charging_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.charging_od_pairs]
+            [cruising_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.repositioning_od_pairs]
+            [matching_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.matching_od_pairs]
         [veh.reset_od_pairs() for veh in all_vehicles]
 
         return num_idle, num_serving, num_charging, num_cruising, n_matches, average_idle_dist, \
@@ -646,7 +630,6 @@ class Simulator(object):
         self.prime_transitions=[]
         self.f_transitions=[]
         self.fo_transitions=[]
-        self.trajectory_transitions=[]
         self.global_state_buffer=dict()
 
 
@@ -667,33 +650,23 @@ class Simulator(object):
         self.current_dqnV = 0
 
         #reset random seed
-        # if seed is None:
-        #    local_rand_seed=np.random.randint(4)
-        # else:
-        #     local_rand_seed=seed
-        local_rand_seed=seed
+        if seed is None:
+           local_rand_seed=np.random.randint(4)
+        else:
+            local_rand_seed=seed
 
+
+        old=random.getstate()
 
         filename = "../data/daily_trips/{}.csv".format(local_rand_seed)
-
-
-
         n = sum(1 for line in open(filename)) - 1  # number of records in file (excludes header)
-        s = int(n*DEMAND_SCALE)  # desired sample size
+        s = int(n*0.3)  # desired sample size
         random.seed(10)
         skip = sorted(
             random.sample(range(1, n + 1), n - s))  # the 0-indexed header will not be included in the skip list
+        random.setstate(old)
 
-        if local_rand_seed>15:
-            random.seed(local_rand_seed)
-            print('doing test, fix random seed')
-        alltrips = pd.read_csv(filename,skiprows=skip, dtype=int)
-        print('Total number of trips in this episode: {}'.format(alltrips.shape))
-        alltrips=alltrips.groupby('origin_hid')
-
-        self.filename=filename
-        self.seed=local_rand_seed
-
+        alltrips = pd.read_csv('../data/daily_trips/{}.csv'.format(local_rand_seed),skiprows=skip, dtype=int).groupby('origin_hid')
 
         #reset hex zones
         for hex in self.hex_zone_collection.values():
@@ -717,9 +690,10 @@ class Simulator(object):
         n_vehicles = len(vehicle_hex_ids)
         vehicle_ids = range(self.last_vehicle_id, self.last_vehicle_id + n_vehicles)
         self.last_vehicle_id += n_vehicles
-        entering_time = np.random.uniform(self.__t, self.__t + 1800, n_vehicles).tolist()
+        entering_time = np.random.uniform(self.__t, self.__t + ENTERING_TIME_BUFFER, n_vehicles).tolist()
         q = sorted(zip(entering_time, vehicle_ids, vehicle_hex_ids))
         self.vehicle_queue = q
 
         #initialize a random seed
+        random.seed()
         print('simulator reset complete')

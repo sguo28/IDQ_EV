@@ -7,7 +7,7 @@ import ray
 
 @ray.remote
 class matching_zone(object):
-    def __init__(self, m_id, hex_zones, time_od,terminal_states):
+    def __init__(self, m_id, hex_zones, time_od):
         """
         m_id: matching zone id
         hex_zones: the list of hex zone objects
@@ -19,7 +19,6 @@ class matching_zone(object):
         self.local_hex_collection = {hex.hex_id: hex for hex in hex_zones}  # create a a local hex
         self.num_matches = 0
         self.time_od = time_od
-        self.terminal_states=terminal_states
 
     def get_local_collection(self):
         return self.local_hex_collection
@@ -49,7 +48,7 @@ class matching_zone(object):
         '''
         for hex in self.hex_zones:
             for veh in hex.vehicles.values():
-                veh.step(timestep,timetick,self.terminal_states)
+                veh.step(timestep,timetick)
 
     def async_demand_gen(self, tick):
         # do the demand generation for all hex zones in the matching zone

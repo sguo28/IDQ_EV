@@ -1,11 +1,11 @@
 from novelties import status_codes
 from collections import defaultdict
-from config.hex_setting import REJECT_TIME, SEC_PER_MIN
+from config.hex_setting import REJECT_TIME, SEC_PER_MIN, MAX_MATCH_TIME, MAX_WAIT_TIME
 import numpy as np
 
 
 class matching_zone(object):
-    def __init__(self, m_id, hex_zones, time_od,terminal_states):
+    def __init__(self, m_id, hex_zones, time_od):
         """
         m_id: matching zone id
         hex_zones: the list of hex zone objects
@@ -16,7 +16,7 @@ class matching_zone(object):
         self.local_hex_collection = {hex.hex_id: hex for hex in hex_zones}  # create a a local hex
         self.num_matches = 0
         self.time_od = time_od
-        self.terminal_states=terminal_states
+
 
     def get_local_collection(self):
         return self.local_hex_collection
@@ -44,9 +44,9 @@ class matching_zone(object):
         call step function for each vehicles
         :return:
         '''
-        for hex in self.hex_zones:
-            for veh in hex.vehicles.values():
-                veh.step(timestep,timetick,self.terminal_states)
+        all_veh=[veh for hex in self.hex_zones for veh in hex.vehicles.values()]
+        for veh in all_veh:
+            veh.step(timestep,timetick,self.hex_zones)
 
     def async_demand_gen(self, tick):
         # do the demand generation for all hex zones in the matching zone
@@ -163,6 +163,8 @@ class matching_zone(object):
         #sort the customers from longest waiting to shortest waiting
         sorted_customer=customers[inds]
 
+        sorted_customer=customers # do not sort by waiting time
+
         r_hex_id = [customer.request.origin_id for customer in sorted_customer]
         requests = [customer for customer in sorted_customer]
 
@@ -172,7 +174,7 @@ class matching_zone(object):
         #     od_mat[:,cid]+=cs.waiting_time
 
 
-        assignments = self.assign_nearest_vehicle(vehs, od_mat)
+        assignments = self.assign_nearest_vehicle(vehs, od_mat,wait_time)
 
         for [v_id, r_id] in assignments:
             # if vehicle is None or customer is None:
@@ -190,7 +192,7 @@ class matching_zone(object):
 
 
     # Returns list of assignments
-    def assign_nearest_vehicle(self, vehicles, od_mat):
+    def assign_nearest_vehicle(self, vehicles, od_mat,wait_time):
         """
         :param:vehicles: vehicles in idled status
         :param: od_tensor: a V by R time matrix (vehicle and request)
@@ -200,7 +202,7 @@ class matching_zone(object):
         time = od_mat
 
         for rid in range(time.shape[1]): #loop through all columns
-            if time[:,rid].min()>240:
+            if time[:,rid].min()+wait_time[rid]>=MAX_MATCH_TIME:
                 continue
             vid=time[:,rid].argmin()
             time[vid,:]=1e9 #mask vehicle out

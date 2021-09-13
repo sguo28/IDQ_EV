@@ -1,6 +1,6 @@
 from novelties import status_codes, customer_preferences, vehicle_types
 from config.hex_setting import SPEED, WAIT_COST,MILE_PER_METER, TOTAL_COST_PER_MILE, DRIVER_TIME_VALUE, \
-    SERVICE_PRICE_PER_MILE, SERVICE_PRICE_PER_MIN
+    SERVICE_PRICE_PER_MILE, SERVICE_PRICE_PER_MIN, MAX_WAIT_TIME
 from random import randrange
 
 
@@ -35,10 +35,10 @@ class Customer(object):
         i = randrange(2)
         if i == 0:
             self.time_preference = customer_preferences.C_not_inHurry
-            self.max_tolerate_delay = float(300)
+            self.max_tolerate_delay = float(MAX_WAIT_TIME)
         else:
             self.time_preference = customer_preferences.C_inHurry
-            self.max_tolerate_delay = float(120)
+            self.max_tolerate_delay = float(MAX_WAIT_TIME)
         i = randrange(2)
         if i == 0:
             self.RS_preference = customer_preferences.C_not_rideShare
@@ -154,16 +154,20 @@ class Customer(object):
         '''
         # initial_price = (full_service_duration * SPEED * MILE_PER_METER * TOTAL_COST_PER_MILE) - (
         #             WAIT_COST * customer_wait_time) + DRIVER_TIME_VALUE * full_service_duration
-        if customer_wait_time<300: #waiting time less than 5 minutes
-            waiting_penalty=customer_wait_time*WAIT_COST
-        elif customer_wait_time>=300 and customer_wait_time<600:
-            waiting_penalty=300*WAIT_COST+(customer_wait_time-300)*2*WAIT_COST #additional penalty for extra waiting tiem
-        else:
-            waiting_penalty = 900 * WAIT_COST+(customer_wait_time - 600) * 4 * WAIT_COST  # additional penalty for extra waiting tiem
+        # if customer_wait_time<300: #waiting time less than 5 minutes
+        #     waiting_penalty=customer_wait_time*WAIT_COST
+        # elif customer_wait_time>=300 and customer_wait_time<600:
+        #     waiting_penalty=300*WAIT_COST+(customer_wait_time-300)*2*WAIT_COST #additional penalty for extra waiting tiem
+        # else:
+        #     waiting_penalty = 900 * WAIT_COST+(customer_wait_time - 600) * 4 * WAIT_COST  # additional penalty for extra waiting tiem
 
-        price =  - waiting_penalty + (total_trip_distance *  SERVICE_PRICE_PER_MILE) + (total_trip_duration * SERVICE_PRICE_PER_MIN)
-        price=max(price,1)
+        price = (total_trip_distance *  SERVICE_PRICE_PER_MILE) + (total_trip_duration * SERVICE_PRICE_PER_MIN)
+        price = price - 0.5*(customer_wait_time+self.waiting_time)/60
 
+        # print(
+        #     'My waiting time {}, my trip duration {} and length {}, my waiting for pickup time {}, my payment={}'.format(
+        #         self.waiting_time, total_trip_duration, total_trip_distance, customer_wait_time,price))
+        # price=max(price,1)
         return price
 
         # SERVICE_REWARD = RIDE_REWARD*num_pass + TRIP_REWARD * trip_time - WAIT_COST * wait_time

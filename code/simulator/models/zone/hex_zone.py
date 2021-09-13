@@ -210,6 +210,17 @@ class hex_zone:
         self.removed_passengers += len(remove_ids)
         self.remove_pass(remove_ids)
 
+    def remove_matched(self):
+        remove_ids = []
+        self.longwait_pass=0
+        self.served_pass=0
+        for pid in self.passengers.keys():
+            if self.passengers[pid].matched==True:
+                self.served_pass +=1
+
+        self.removed_passengers += len(remove_ids)
+        self.remove_pass(remove_ids)
+
     def vehicle_dispatch(self, tick):
         """
         Dispatch the vehicles. This step follows from matching step
@@ -243,8 +254,10 @@ class hex_zone:
                 vehicle.state.need_route = True
                 if charge_flag == 0:
                     if isinstance(vehicle.state.current_hex, list): print('relo index wrong')
-                    vehicle.cruise(target, action_id, current_time)
-                    # print('Vehicle is cruising from {} to {}'.format(vehicle.state.hex_id, target_hex_id))
+                    vehicle.cruise(target, action_id, current_time,target_hex_id)
+                    if action_id>0 and target_hex_id==vehicle.state.hex_id:
+                        print('We are having mistakes!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+                        print('action={}, hex={}, neighbors={}, from={}, to={}'.format(action_id, self.hex_id, self.neighbor_hex_id,vehicle.state.hex_id,target_hex_id))
                 else:
                     if isinstance(vehicle.state.current_hex, list): print('charging index wrong')
                     vehicle.head_for_charging_station(cid, target, current_time, action_id)
@@ -256,13 +269,13 @@ class hex_zone:
         action_id: action ids from 0-11, pre-derived from DQN
         '''
         cid = None # charging_station_id
-        valid_relocation_space = [vehicle.state.hex_id] + self.neighbor_hex_id
+        valid_relocation_space = self.neighbor_hex_id
         try:
             target_hex_id = valid_relocation_space[action_id]
             lon, lat = self.coord_list[target_hex_id]
             charge_flag = 0
         except IndexError:
-            print(vehicle.state.hex_id,self.neighbor_hex_id)
+            print(vehicle.state.hex_id,self.neighbor_hex_id,action_id)
             cid = self.nearest_cs[action_id - RELOCATION_DIM]
             target_hex_id = self.charging_hexes[cid]
             lon, lat = self.charging_station_loc[self.nearest_cs[action_id - RELOCATION_DIM]]
