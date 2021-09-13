@@ -19,10 +19,105 @@ class ReplayMemory(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+        indices = np.random.default_rng().choice(len(self.memory), batch_size, replace=False)
+        data = [self.memory[idx] for idx in indices]
+        return data
 
     def __len__(self):
         return len(self.memory)
+
+
+
+class Step_ReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.Transition = namedtuple('Transition',
+                                     ('state', 'action', 'next_state', 'reward','terminate_flag','time_steps', 'valid_action_num'))
+        self.capacity = capacity
+        self.memory = [ReplayMemory(10000) for _ in range(24)]
+
+    def push(self, *args):
+        """Saves a transition."""
+
+        state=self.Transition(*args)
+        sub_memory=self.memory[state.state[0]//3600%24]
+        if len(sub_memory.memory) < sub_memory.capacity:
+            sub_memory.memory.append(None)
+        sub_memory.memory[sub_memory.position] = state
+        sub_memory.position = (sub_memory.position + 1) % sub_memory.capacity
+
+    def sample(self, batch_size):
+        bs=batch_size//24
+        data=[]
+        for m in self.memory:
+            indices = np.random.default_rng().choice(len(m.memory), bs, replace=False)
+            data += [m.memory[idx] for idx in indices]
+        return data
+
+    def __len__(self):
+        return len(self.memory[0].memory)
+
+
+
+class Step_PrimeReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.Transition = namedtuple('Transition',
+                                     ('state', 'action', 'next_state','trip_flag','time_steps', 'valid_action_num'))
+        self.capacity = capacity
+        self.memory = [Prime_ReplayMemory(15000) for _ in range(24)]
+
+    def push(self, *args):
+        """Saves a transition."""
+
+        state=self.Transition(*args)
+        sub_memory=self.memory[state.state[0]//3600%24]
+        if len(sub_memory.memory) < sub_memory.capacity:
+            sub_memory.memory.append(None)
+        sub_memory.memory[sub_memory.position] = state
+        sub_memory.position = (sub_memory.position + 1) % sub_memory.capacity
+
+    def sample(self, batch_size):
+        bs=batch_size//24
+        data=[]
+        for m in self.memory:
+            indices = np.random.default_rng().choice(len(m.memory), bs, replace=False)
+            data += [m.memory[idx] for idx in indices]
+        return data
+
+    def __len__(self):
+        return len(self.memory[0].memory)
+
+
+class Step_FReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.Transition = namedtuple('Transition',
+                                     ('state', 'next_state','on_opt'))
+        self.capacity = capacity
+        self.memory = [F_ReplayMemory(15000) for _ in range(24)]
+
+    def push(self, *args):
+        """Saves a transition."""
+
+        state=self.Transition(*args)
+        sub_memory=self.memory[state.state[0]//3600%24]
+        if len(sub_memory.memory) < sub_memory.capacity:
+            sub_memory.memory.append(None)
+        sub_memory.memory[sub_memory.position] = state
+        sub_memory.position = (sub_memory.position + 1) % sub_memory.capacity
+
+    def sample(self, batch_size):
+        bs=batch_size//24
+        data=[]
+        for m in self.memory:
+            indices = np.random.default_rng().choice(len(m.memory), bs, replace=False)
+            data += [m.memory[idx] for idx in indices]
+        return data
+
+    def __len__(self):
+        return len(self.memory[0].memory)
+
 
 
 class Prime_ReplayMemory(object):
@@ -42,7 +137,9 @@ class Prime_ReplayMemory(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+        indices = np.random.default_rng().choice(len(self.memory), batch_size, replace=False)
+        data = [self.memory[idx] for idx in indices]
+        return data
         #return random.sample(self.memory, batch_size)
 
     def __len__(self):
@@ -52,7 +149,39 @@ class F_ReplayMemory(object):
 
     def __init__(self, capacity):
         self.Transition = namedtuple('Transition',
-                                     ('state', 'next_state'))
+                                     ('state', 'next_state','on_opt'))
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, *args):
+        """Saves a transition."""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = self.Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+
+    # def sample(self, batch_size):
+    #     # return self.memory
+    #     return random.sample(self.memory, batch_size)
+
+    def sample(self, batch_size):
+        indices = np.random.default_rng().choice(len(self.memory), batch_size, replace=False)
+        data = [self.memory[idx] for idx in indices]
+        return data
+
+    def reset(self):
+        self.memory = []
+        self.position = 0
+
+    def __len__(self):
+        return len(self.memory)
+
+class Trajectory_ReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.Transition = namedtuple('Transition',
+                                     ('trajectory'))
         self.capacity = capacity
         self.memory = []
         self.position = 0
@@ -65,17 +194,13 @@ class F_ReplayMemory(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        # return self.memory
-        return random.sample(self.memory, batch_size)
-
-    def reset(self):
-        self.memory = []
-        self.position = 0
+        indices = np.random.default_rng().choice(len(self.memory), batch_size, replace=False)
+        data = [self.memory[idx] for idx in indices]
+        return data
+        #return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
-
-
 
 # class PrioritizedMemory:   # stored as ( s, a, r, s_ , t)
 #     """
